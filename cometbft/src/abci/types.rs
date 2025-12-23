@@ -88,6 +88,10 @@ impl BlockSignatureInfo {
             BlockSignatureInfo::Flag(Commit) | BlockSignatureInfo::Flag(Nil) => true,
             BlockSignatureInfo::Flag(Absent) => false,
             BlockSignatureInfo::LegacySigned => true,
+            BlockSignatureInfo::Flag(AggCommit) |
+            BlockSignatureInfo::Flag(AggCommitAbsent) |
+            BlockSignatureInfo::Flag(AggNil) |
+            BlockSignatureInfo::Flag(AggNilAbsent) => true,
         }
     }
 }

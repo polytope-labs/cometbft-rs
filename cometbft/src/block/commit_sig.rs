@@ -48,6 +48,26 @@ pub enum CommitSig {
         /// Signature of vote
         signature: Option<Signature>,
     },
+    BlockIdFlagAggCommit {
+        validator_address: account::Id,
+        timestamp: Time,
+        signature: Option<Signature>,
+    },
+    BlockIdFlagAggCommitAbsent {
+        validator_address: account::Id,
+        timestamp: Time,
+        signature: Option<Signature>,
+    },
+    BlockIdFlagAggNil {
+        validator_address: account::Id,
+        timestamp: Time,
+        signature: Option<Signature>,
+    },
+    BlockIdFlagAggNilAbsent {
+        validator_address: account::Id,
+        timestamp: Time,
+        signature: Option<Signature>,
+    },
 }
 
 impl CommitSig {
@@ -58,6 +78,18 @@ impl CommitSig {
                 validator_address, ..
             } => Some(*validator_address),
             Self::BlockIdFlagNil {
+                validator_address, ..
+            } => Some(*validator_address),
+            Self::BlockIdFlagAggCommit {
+                validator_address, ..
+            } => Some(*validator_address),
+            Self::BlockIdFlagAggCommitAbsent {
+                validator_address, ..
+            } => Some(*validator_address),
+            Self::BlockIdFlagAggNil {
+                validator_address, ..
+            } => Some(*validator_address),
+            Self::BlockIdFlagAggNilAbsent {
                 validator_address, ..
             } => Some(*validator_address),
             _ => None,
@@ -71,12 +103,16 @@ impl CommitSig {
 
     /// Whether this signature is a commit  (validator voted for the Commit.BlockId)
     pub fn is_commit(&self) -> bool {
-        matches!(self, Self::BlockIdFlagCommit { .. })
+        matches!(self, Self::BlockIdFlagCommit { .. }
+            | Self::BlockIdFlagAggCommit { .. }
+            | Self::BlockIdFlagAggCommitAbsent { .. })
     }
 
     /// Whether this signature is nil (validator voted for nil)
     pub fn is_nil(&self) -> bool {
-        matches!(self, Self::BlockIdFlagNil { .. })
+        matches!(self, Self::BlockIdFlagNil { .. }
+            | Self::BlockIdFlagAggNil { .. }
+            | Self::BlockIdFlagAggNilAbsent { .. })
     }
 }
 
@@ -183,6 +219,46 @@ cometbft_old_pb_modules! {
                     timestamp: Some(timestamp.into()),
                     signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
                 },
+                CommitSig::BlockIdFlagAggCommit {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => RawCommitSig {
+                    block_id_flag: BlockIdFlag::Commit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggCommitAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => RawCommitSig {
+                    block_id_flag: BlockIdFlag::Commit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNil {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => RawCommitSig {
+                    block_id_flag: BlockIdFlag::Nil as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNilAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => RawCommitSig {
+                    block_id_flag: BlockIdFlag::Nil as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
             }
         }
     }
@@ -236,47 +312,56 @@ mod v1 {
                 return Ok(CommitSig::BlockIdFlagAbsent);
             }
 
-            if value.block_id_flag == BlockIdFlag::Commit as i32 {
-                if value.signature.is_empty() {
-                    return Err(Error::invalid_signature(
-                        "expected non-empty signature for regular commitsig".to_string(),
-                    ));
-                }
-
-                if value.validator_address.is_empty() {
-                    return Err(Error::invalid_validator_address());
-                }
-
-                let timestamp = value
-                    .timestamp
-                    .ok_or_else(Error::missing_timestamp)?
-                    .try_into()?;
-
-                return Ok(CommitSig::BlockIdFlagCommit {
-                    validator_address: value.validator_address.try_into()?,
-                    timestamp,
-                    signature: Signature::new(value.signature)?,
-                });
+            if value.validator_address.is_empty() {
+                return Err(Error::invalid_validator_address());
             }
-            if value.block_id_flag == BlockIdFlag::Nil as i32 {
-                if value.signature.is_empty() {
-                    return Err(Error::invalid_signature(
-                        "nil commitsig has no signature".to_string(),
-                    ));
-                }
-                if value.validator_address.is_empty() {
-                    return Err(Error::invalid_validator_address());
-                }
-                return Ok(CommitSig::BlockIdFlagNil {
-                    validator_address: value.validator_address.try_into()?,
-                    timestamp: value
-                        .timestamp
-                        .ok_or_else(Error::missing_timestamp)?
-                        .try_into()?,
-                    signature: Signature::new(value.signature)?,
-                });
+
+            let timestamp = value
+                .timestamp
+                .ok_or_else(Error::missing_timestamp)?
+                .try_into()?;
+
+            let signature = if !value.signature.is_empty() {
+                Some(Signature::new(value.signature)?)
+            } else {
+                None
+            };
+
+            let signature = signature.flatten();
+
+            let validator_address = value.validator_address.try_into()?;
+
+            match value.block_id_flag {
+                x if x == BlockIdFlag::Commit as i32 => {
+                    if signature.is_none() {
+                        return Err(Error::invalid_signature(
+                           "expected non-empty signature for regular commitsig".to_string()
+                        ));
+                    }
+                    Ok(CommitSig::BlockIdFlagCommit { validator_address, timestamp, signature})
+                },
+                x if x == BlockIdFlag::Nil as i32 => {
+                    if signature.is_none() {
+                        return Err(Error::invalid_signature(
+                            "nil commitsig has no signature".to_string()
+                        ));
+                    }
+                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                },
+                x if x == BlockIdFlag::AggCommit as i32 => {
+                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                },
+                x if x == BlockIdFlag::AggCommitAbsent as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggCommitAbsent { validator_address, timestamp, signature })
+                },
+                x if x == BlockIdFlag::AggNil as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggNil { validator_address, timestamp, signature })
+                },
+                x if x == BlockIdFlag::AggNilAbsent as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggNilAbsent { validator_address, timestamp, signature })
+                },
+                _ => Err(Error::block_id_flag())
             }
-            Err(Error::block_id_flag())
         }
     }
 
@@ -305,6 +390,46 @@ mod v1 {
                     signature,
                 } => pb::CommitSig {
                     block_id_flag: BlockIdFlag::Commit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggCommit {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: BlockIdFlag::AggCommit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggCommitAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: BlockIdFlag::AggCommitAbsent as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNil {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: BlockIdFlag::AggNil as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNilAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: BlockIdFlag::AggNilAbsent as i32,
                     validator_address: validator_address.into(),
                     timestamp: Some(timestamp.into()),
                     signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
@@ -362,47 +487,56 @@ mod v1beta1 {
                 return Ok(CommitSig::BlockIdFlagAbsent);
             }
 
-            if value.block_id_flag == BlockIdFlag::Commit as i32 {
-                if value.signature.is_empty() {
-                    return Err(Error::invalid_signature(
-                        "expected non-empty signature for regular commitsig".to_string(),
-                    ));
-                }
-
-                if value.validator_address.is_empty() {
-                    return Err(Error::invalid_validator_address());
-                }
-
-                let timestamp = value
-                    .timestamp
-                    .ok_or_else(Error::missing_timestamp)?
-                    .try_into()?;
-
-                return Ok(CommitSig::BlockIdFlagCommit {
-                    validator_address: value.validator_address.try_into()?,
-                    timestamp,
-                    signature: Signature::new(value.signature)?,
-                });
+            if value.validator_address.is_empty() {
+                return Err(Error::invalid_validator_address());
             }
-            if value.block_id_flag == BlockIdFlag::Nil as i32 {
-                if value.signature.is_empty() {
-                    return Err(Error::invalid_signature(
-                        "nil commitsig has no signature".to_string(),
-                    ));
-                }
-                if value.validator_address.is_empty() {
-                    return Err(Error::invalid_validator_address());
-                }
-                return Ok(CommitSig::BlockIdFlagNil {
-                    validator_address: value.validator_address.try_into()?,
-                    timestamp: value
-                        .timestamp
-                        .ok_or_else(Error::missing_timestamp)?
-                        .try_into()?,
-                    signature: Signature::new(value.signature)?,
-                });
+
+            let timestamp = value
+                .timestamp
+                .ok_or_else(Error::missing_timestamp)?
+                .try_into()?;
+
+            let signature = if !value.signature.is_empty() {
+                Some(Signature::new(value.signature)?)
+            } else {
+                None
+            };
+
+            let signature = signature.flatten();
+
+            let validator_address = value.validator_address.try_into()?;
+
+            match value.block_id_flag {
+                x if x == cometbft_proto::types::v1::BlockIdFlag::Commit as i32 => {
+                    if signature.is_none() {
+                        return Err(Error::invalid_signature(
+                            "expected non-empty signature for regular commitsig".to_string()
+                        ));
+                    }
+                    Ok(CommitSig::BlockIdFlagCommit { validator_address, timestamp, signature})
+                },
+                x if x == cometbft_proto::types::v1::BlockIdFlag::Nil as i32 => {
+                    if signature.is_none() {
+                        return Err(Error::invalid_signature(
+                            "nil commitsig has no signature".to_string()
+                        ));
+                    }
+                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                },
+                x if x == cometbft_proto::types::v1::BlockIdFlag::AggCommit as i32 => {
+                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                },
+                x if x == cometbft_proto::types::v1::BlockIdFlag::AggCommitAbsent as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggCommitAbsent { validator_address, timestamp, signature })
+                },
+                x if x == cometbft_proto::types::v1::BlockIdFlag::AggNil as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggNil { validator_address, timestamp, signature })
+                },
+                x if x == cometbft_proto::types::v1::BlockIdFlag::AggNilAbsent as i32 => {
+                    Ok(CommitSig::BlockIdFlagAggNilAbsent { validator_address, timestamp, signature })
+                },
+                _ => Err(Error::block_id_flag())
             }
-            Err(Error::block_id_flag())
         }
     }
 
@@ -431,6 +565,46 @@ mod v1beta1 {
                     signature,
                 } => pb::CommitSig {
                     block_id_flag: BlockIdFlag::Commit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggCommit {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: cometbft_proto::types::v1::BlockIdFlag::AggCommit as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggCommitAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: cometbft_proto::types::v1::BlockIdFlag::AggCommitAbsent as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNil {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: cometbft_proto::types::v1::BlockIdFlag::AggNil as i32,
+                    validator_address: validator_address.into(),
+                    timestamp: Some(timestamp.into()),
+                    signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
+                },
+                CommitSig::BlockIdFlagAggNilAbsent {
+                    validator_address,
+                    timestamp,
+                    signature,
+                } => pb::CommitSig {
+                    block_id_flag: cometbft_proto::types::v1::BlockIdFlag::AggNilAbsent as i32,
                     validator_address: validator_address.into(),
                     timestamp: Some(timestamp.into()),
                     signature: signature.map(|s| s.into_bytes()).unwrap_or_default(),
