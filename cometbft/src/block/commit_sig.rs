@@ -349,7 +349,7 @@ mod v1 {
                     Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
                 },
                 x if x == BlockIdFlag::AggCommit as i32 => {
-                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                    Ok(CommitSig::BlockIdFlagAggCommit {validator_address, timestamp, signature})
                 },
                 x if x == BlockIdFlag::AggCommitAbsent as i32 => {
                     Ok(CommitSig::BlockIdFlagAggCommitAbsent { validator_address, timestamp, signature })
@@ -524,7 +524,7 @@ mod v1beta1 {
                     Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
                 },
                 x if x == cometbft_proto::types::v1::BlockIdFlag::AggCommit as i32 => {
-                    Ok(CommitSig::BlockIdFlagNil {validator_address, timestamp, signature})
+                    Ok(CommitSig::BlockIdFlagAggCommit {validator_address, timestamp, signature})
                 },
                 x if x == cometbft_proto::types::v1::BlockIdFlag::AggCommitAbsent as i32 => {
                     Ok(CommitSig::BlockIdFlagAggCommitAbsent { validator_address, timestamp, signature })
@@ -630,5 +630,74 @@ mod v1beta1 {
         let raw_commit_sg = serde_json::from_str::<pb::CommitSig>(json).unwrap();
         let commit_sig = CommitSig::try_from(raw_commit_sg).unwrap();
         assert_eq!(commit_sig, CommitSig::BlockIdFlagAbsent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::dbg;
+    use super::*;
+    use crate::block::Commit;
+
+    #[test]
+    fn test_parse_berachain_agg_commit() {
+        let berachain_commit_json = r#"{
+            "height": "14735438",
+            "round": 0,
+            "block_id": {
+                "hash": "E1FFFD6A2DB6812B31B5AEA86ABC556F815D0A76A6268DC49F0B812AA2818693",
+                "parts": {
+                    "total": 1,
+                    "hash": "8E512735E7E36174F840DBFE2F6A7D895BFE2EB0BA16E5FCE0AFE7CDA20C4D2F"
+                }
+            },
+            "signatures": [
+                {
+                    "block_id_flag": 4,
+                    "validator_address": "0EB600A5EB0DCCD405B3C71953C727975E39EDE4",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "signature": "oAo+wJBh8bu4WBf2uVOtqwxH2bm5Fef2drAqoE/1YRb+rA1JhrhakJnSKJEEoCEIFJaS3qXcbQqPrF8nnz9Ayb0nTy1x6Ely73irtT+kA0zM6vnSmZyyt2siCakSY8OT"
+                },
+                {
+                    "block_id_flag": 2,
+                    "validator_address": "17348776DE5BC1F4BE6F1DB84042DAC57D71C890",
+                    "timestamp": "2023-01-01T00:00:00Z",
+                    "signature": "oAo+wJBh8bu4WBf2uVOtqwxH2bm5Fef2drAqoE/1YRb+rA1JhrhakJnSKJEEoCEIFJaS3qXcbQqPrF8nnz9Ayb0nTy1x6Ely73irtT+kA0zM6vnSmZyyt2siCakSY8OT"
+                },
+                {
+                    "block_id_flag": 5,
+                    "validator_address": "27219ACFC8E974C0DB5E137CC42E8427553802FC",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "signature": null
+                }
+            ]
+        }"#;
+
+        let commit: Commit = serde_json::from_str(berachain_commit_json).expect("Failed to deserialize Berachain Commit");
+
+        assert_eq!(commit.signatures.len(), 3);
+        dbg!(commit.signatures.clone());
+
+        match &commit.signatures[0] {
+            CommitSig::BlockIdFlagAggCommit { validator_address, signature, .. } => {
+                let addr_hex = validator_address.to_string();
+                assert_eq!(addr_hex.to_uppercase(), "0EB600A5EB0DCCD405B3C71953C727975E39EDE4");
+                assert_eq!(signature.as_ref().unwrap().as_bytes().len(), 96);
+            },
+            _ => panic!("First signature should be AggCommit (Flag 4)"),
+        }
+
+        match &commit.signatures[1] {
+            CommitSig::BlockIdFlagCommit { .. } => {},
+            _ => panic!("Second signature should be Standard Commit (Flag 2)"),
+        }
+
+        match &commit.signatures[2] {
+            CommitSig::BlockIdFlagAggCommitAbsent { validator_address, .. } => {
+                let addr_hex = validator_address.to_string();
+                assert_eq!(addr_hex.to_uppercase(), "27219ACFC8E974C0DB5E137CC42E8427553802FC");
+            },
+            _ => panic!("Third signature should be AggCommitAbsent (Flag 5)"),
+        }
     }
 }
