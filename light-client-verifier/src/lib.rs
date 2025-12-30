@@ -13,9 +13,6 @@ mod verifier;
 #[cfg(test)]
 mod test;
 
-#[cfg(test)]
-mod debug_berachain;
-
 pub use verifier::{PredicateVerifier, Verdict, Verifier};
 
 #[cfg(feature = "rust-crypto")]
