@@ -387,7 +387,7 @@ impl Ord for PublicKey {
             },
             PublicKey::Bls12_381(a) => match other {
                 PublicKey::Bls12_381(b) => a.cmp(b),
-                _ => Ordering::Greater,
+                _ => Ordering::Less,
             },
         }
     }
