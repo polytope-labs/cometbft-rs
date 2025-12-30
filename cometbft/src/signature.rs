@@ -14,8 +14,6 @@ use crate::{error::Error, prelude::*};
 pub const SIGNATURE_LENGTH: usize = 64;
 pub const BLS_SIGNATURE_LENGTH: usize = 96;
 
-
-
 /// Signatures
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Signature(Vec<u8>);
@@ -75,7 +73,6 @@ impl Signature {
                 bytes.len()
             )));
         }
-
 
         Ok(Some(Self(bytes.to_vec())))
     }

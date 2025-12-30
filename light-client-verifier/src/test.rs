@@ -1,18 +1,16 @@
 extern crate std;
 
+use crate::options::Options;
+use crate::types::LightBlock;
+use crate::{ProdVerifier, Verdict, Verifier};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::time::Duration;
-use core::convert::TryInto;
 use cometbft::block::CommitSig;
-use cometbft_testgen::{
-    light_block::LightBlock as TestgenLightBlock, Generator,
-};
+use cometbft_testgen::{light_block::LightBlock as TestgenLightBlock, Generator};
+use core::convert::TryInto;
+use core::time::Duration;
 use serde_json::Value;
-use crate::options::Options;
-use crate::{ProdVerifier, Verdict, Verifier};
-use crate::types::LightBlock;
 
 use blst::min_pk::{PublicKey, Signature};
 use blst::BLST_ERROR;
@@ -21,39 +19,38 @@ use prost::Message;
 // --- Protobuf Definitions matching Berachain Spec (No Timestamp) ---
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CanonicalVote {
-    #[prost(int32, tag="1")]
+    #[prost(int32, tag = "1")]
     pub r#type: i32, // SignedMsgType (2 for Precommit)
 
-    #[prost(sfixed64, tag="2")]
+    #[prost(sfixed64, tag = "2")]
     pub height: i64,
 
-    #[prost(sfixed64, tag="3")]
+    #[prost(sfixed64, tag = "3")]
     pub round: i64,
 
-    #[prost(message, optional, tag="4")]
+    #[prost(message, optional, tag = "4")]
     pub block_id: Option<CanonicalBlockID>,
 
     // Field 5 (Timestamp) is removed/reserved in Berachain
-
-    #[prost(string, tag="6")]
+    #[prost(string, tag = "6")]
     pub chain_id: String,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CanonicalBlockID {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub hash: Vec<u8>,
 
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub part_set_header: Option<CanonicalPartSetHeader>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CanonicalPartSetHeader {
-    #[prost(uint32, tag="1")]
+    #[prost(uint32, tag = "1")]
     pub total: u32,
 
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub hash: Vec<u8>,
 }
 
@@ -62,8 +59,7 @@ fn fetch_light_block(height: u64) -> LightBlock {
 
     let rpc_url = std::env::var("RPC_URL")
         .unwrap_or_else(|_| "https://hyperbridge.rpc-mainnet.berachain.com".to_string());
-    let api_key = std::env::var("API_KEY")
-        .unwrap_or_else(|_| "".to_string());
+    let api_key = std::env::var("API_KEY").unwrap_or_else(|_| "".to_string());
 
     let commit_url = format!("{}/commit?height={}&apikey={}", rpc_url, height, api_key);
     let commit_resp: Value = client.get(&commit_url).send().unwrap().json().unwrap();
@@ -74,7 +70,10 @@ fn fetch_light_block(height: u64) -> LightBlock {
     let per_page = 100;
 
     loop {
-        let vals_url = format!("{}/validators?height={}&per_page={}&page={}&apikey={}", rpc_url, height, per_page, page, api_key);
+        let vals_url = format!(
+            "{}/validators?height={}&per_page={}&page={}&apikey={}",
+            rpc_url, height, per_page, page, api_key
+        );
         std::println!("Fetching validators page {}: {}", page, vals_url);
 
         let vals_resp: Value = client.get(&vals_url).send().unwrap().json().unwrap();
@@ -87,7 +86,11 @@ fn fetch_light_block(height: u64) -> LightBlock {
         let total_str = result["total"].as_str().unwrap_or("0");
         let total: usize = total_str.parse().unwrap_or(0);
 
-        if all_vals_json.len() >= total || result["validators"].as_array().map_or(true, |v| v.is_empty()) {
+        if all_vals_json.len() >= total
+            || result["validators"]
+                .as_array()
+                .map_or(true, |v| v.is_empty())
+        {
             break;
         }
         page += 1;
@@ -97,8 +100,19 @@ fn fetch_light_block(height: u64) -> LightBlock {
     let mut all_next_vals_json = Vec::new();
     let mut next_page = 1;
     loop {
-        let next_vals_url = format!("{}/validators?height={}&per_page={}&page={}&apikey={}", rpc_url, height + 1, per_page, next_page, api_key);
-        std::println!("Fetching next validators page {}: {}", next_page, next_vals_url);
+        let next_vals_url = format!(
+            "{}/validators?height={}&per_page={}&page={}&apikey={}",
+            rpc_url,
+            height + 1,
+            per_page,
+            next_page,
+            api_key
+        );
+        std::println!(
+            "Fetching next validators page {}: {}",
+            next_page,
+            next_vals_url
+        );
 
         let next_vals_resp: Value = client.get(&next_vals_url).send().unwrap().json().unwrap();
         let result = &next_vals_resp["result"];
@@ -110,7 +124,11 @@ fn fetch_light_block(height: u64) -> LightBlock {
         let total_str = result["total"].as_str().unwrap_or("0");
         let total: usize = total_str.parse().unwrap_or(0);
 
-        if all_next_vals_json.len() >= total || result["validators"].as_array().map_or(true, |v| v.is_empty()) {
+        if all_next_vals_json.len() >= total
+            || result["validators"]
+                .as_array()
+                .map_or(true, |v| v.is_empty())
+        {
             break;
         }
         next_page += 1;
@@ -139,7 +157,8 @@ fn fetch_light_block(height: u64) -> LightBlock {
     light_block.signed_header.header.version.block = parse_u64(&json_header["version"]["block"]);
     light_block.signed_header.header.version.app = parse_u64(&json_header["version"]["app"]);
 
-    light_block.signed_header.header.chain_id = json_header["chain_id"].as_str().unwrap().parse().unwrap();
+    light_block.signed_header.header.chain_id =
+        json_header["chain_id"].as_str().unwrap().parse().unwrap();
     light_block.signed_header.header.height = (parse_u64(&json_header["height"]) as u32).into();
 
     let time_str = json_header["time"].as_str().unwrap();
@@ -147,36 +166,77 @@ fn fetch_light_block(height: u64) -> LightBlock {
     light_block.signed_header.header.time = vote_time;
 
     let lb_id = &json_header["last_block_id"];
-    light_block.signed_header.header.last_block_id = if lb_id["hash"].as_str().unwrap_or("").is_empty() {
-        None
-    } else {
-        Some(cometbft::block::Id {
-            hash: lb_id["hash"].as_str().unwrap().parse().unwrap(),
-            part_set_header: cometbft::block::parts::Header::new(
-                lb_id["parts"]["total"].as_u64().unwrap() as u32,
-                lb_id["parts"]["hash"].as_str().unwrap().parse().unwrap(),
-            ).unwrap(),
-        })
-    };
+    light_block.signed_header.header.last_block_id =
+        if lb_id["hash"].as_str().unwrap_or("").is_empty() {
+            None
+        } else {
+            Some(cometbft::block::Id {
+                hash: lb_id["hash"].as_str().unwrap().parse().unwrap(),
+                part_set_header: cometbft::block::parts::Header::new(
+                    lb_id["parts"]["total"].as_u64().unwrap() as u32,
+                    lb_id["parts"]["hash"].as_str().unwrap().parse().unwrap(),
+                )
+                .unwrap(),
+            })
+        };
 
-    light_block.signed_header.header.last_commit_hash = json_header["last_commit_hash"].as_str().filter(|s| !s.is_empty()).map(|s| s.parse().unwrap());
-    light_block.signed_header.header.data_hash = json_header["data_hash"].as_str().filter(|s| !s.is_empty()).map(|s| s.parse().unwrap());
-    light_block.signed_header.header.validators_hash = json_header["validators_hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.next_validators_hash = json_header["next_validators_hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.consensus_hash = json_header["consensus_hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.app_hash = json_header["app_hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.last_results_hash = json_header["last_results_hash"].as_str().filter(|s| !s.is_empty()).map(|s| s.parse().unwrap());
-    light_block.signed_header.header.evidence_hash = json_header["evidence_hash"].as_str().filter(|s| !s.is_empty()).map(|s| s.parse().unwrap());
-    light_block.signed_header.header.proposer_address = json_header["proposer_address"].as_str().unwrap().parse().unwrap();
+    light_block.signed_header.header.last_commit_hash = json_header["last_commit_hash"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap());
+    light_block.signed_header.header.data_hash = json_header["data_hash"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap());
+    light_block.signed_header.header.validators_hash = json_header["validators_hash"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    light_block.signed_header.header.next_validators_hash = json_header["next_validators_hash"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    light_block.signed_header.header.consensus_hash = json_header["consensus_hash"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    light_block.signed_header.header.app_hash =
+        json_header["app_hash"].as_str().unwrap().parse().unwrap();
+    light_block.signed_header.header.last_results_hash = json_header["last_results_hash"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap());
+    light_block.signed_header.header.evidence_hash = json_header["evidence_hash"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap());
+    light_block.signed_header.header.proposer_address = json_header["proposer_address"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
 
     light_block.signed_header.commit.height = (parse_u64(&json_commit["height"]) as u32).into();
     light_block.signed_header.commit.round = (parse_u64(&json_commit["round"]) as u16).into();
 
-    light_block.signed_header.commit.block_id.hash = json_commit["block_id"]["hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.commit.block_id.part_set_header = cometbft::block::parts::Header::new(
-        json_commit["block_id"]["parts"]["total"].as_u64().unwrap() as u32,
-        json_commit["block_id"]["parts"]["hash"].as_str().unwrap().parse().unwrap(),
-    ).unwrap();
+    light_block.signed_header.commit.block_id.hash = json_commit["block_id"]["hash"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    light_block.signed_header.commit.block_id.part_set_header =
+        cometbft::block::parts::Header::new(
+            json_commit["block_id"]["parts"]["total"].as_u64().unwrap() as u32,
+            json_commit["block_id"]["parts"]["hash"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        )
+        .unwrap();
 
     let raw_sigs = json_commit["signatures"].as_array().unwrap();
     let mut new_sigs = Vec::new();
@@ -192,8 +252,10 @@ fn fetch_light_block(height: u64) -> LightBlock {
         };
 
         let signature_bytes = if let Some(s) = sig["signature"].as_str() {
-            use base64::{Engine as _, engine::general_purpose};
-            general_purpose::STANDARD.decode(s).expect("Failed to decode signature base64")
+            use base64::{engine::general_purpose, Engine as _};
+            general_purpose::STANDARD
+                .decode(s)
+                .expect("Failed to decode signature base64")
         } else {
             Vec::new()
         };
@@ -229,7 +291,12 @@ fn fetch_light_block(height: u64) -> LightBlock {
             let proposer_priority: i64 = v["proposer_priority"].as_str().unwrap().parse().unwrap();
 
             let pub_key: cometbft::PublicKey = serde_json::from_value(v["pub_key"].clone())
-                .unwrap_or_else(|e| panic!("Failed to parse public key: {:?} Error: {}", v["pub_key"], e));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to parse public key: {:?} Error: {}",
+                        v["pub_key"], e
+                    )
+                });
 
             let val = cometbft::validator::Info {
                 address,
@@ -245,7 +312,8 @@ fn fetch_light_block(height: u64) -> LightBlock {
 
     // Strict CometBFT Sorting: Power Descending, then Address Ascending
     light_block.validators = cometbft::validator::Set::new(parse_vals(&all_vals_json), None);
-    light_block.next_validators = cometbft::validator::Set::new(parse_vals(&all_next_vals_json), None);
+    light_block.next_validators =
+        cometbft::validator::Set::new(parse_vals(&all_next_vals_json), None);
     light_block.provider = "0000000000000000000000000000000000000000".parse().unwrap();
 
     light_block
@@ -303,7 +371,9 @@ fn verify_bls_aggregation(light_block: &LightBlock) {
     let computed_val_hash = light_block.validators.hash();
     let header_val_hash = light_block.signed_header.header.validators_hash;
     if computed_val_hash != header_val_hash {
-        std::println!("❌ VALIDATOR HASH MISMATCH! The local validator set does not match the header.");
+        std::println!(
+            "❌ VALIDATOR HASH MISMATCH! The local validator set does not match the header."
+        );
         return;
     }
     std::println!("Validator hash matches header");
@@ -326,13 +396,22 @@ fn verify_bls_aggregation(light_block: &LightBlock) {
         let val = match find_validator(&validator_address) {
             Some(v) => v,
             None => {
-                std::println!("Signature[{}]: Validator {} not found in set", i, validator_address);
+                std::println!(
+                    "Signature[{}]: Validator {} not found in set",
+                    i,
+                    validator_address
+                );
                 continue;
-            }
+            },
         };
 
         if i < 3 {
-            std::println!("Sig[{}]: Validator {} found with power {}", i, val.address, val.power);
+            std::println!(
+                "Sig[{}]: Validator {} found with power {}",
+                i,
+                val.address,
+                val.power
+            );
         }
 
         match sig {
@@ -396,7 +475,7 @@ fn verify_bls_aggregation(light_block: &LightBlock) {
                     }
                 }
             },
-            _ => {}
+            _ => {},
         }
     }
 

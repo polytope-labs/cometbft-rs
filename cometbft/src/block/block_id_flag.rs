@@ -16,9 +16,7 @@ pub enum BlockIdFlag {
     /// Voted for nil and contains aggregated signature.
     AggNil,
     /// Voted for nil.
-    AggNilAbsent
-
-
+    AggNilAbsent,
 }
 
 // =============================================================================

@@ -260,7 +260,6 @@ mod v1 {
                 PublicKey::Bls12_381(ref pk) => RawPublicKey {
                     sum: Some(Sum::Bls12381(pk.clone())),
                 },
-
             }
         }
     }
@@ -334,7 +333,7 @@ impl PublicKey {
                 let mut key_bytes = vec![];
                 key_bytes.extend(pk);
                 key_bytes
-            }
+            },
         };
         bech32::encode(hrp, backward_compatible_amino_prefixed_pubkey)
     }
@@ -394,7 +393,7 @@ impl Ord for PublicKey {
 }
 
 /// Public key roles used in CometBFT networks
-#[derive( Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum CometbftKey {
     /// User signing keys used for interacting with accounts in the state machine
     AccountKey(PublicKey),

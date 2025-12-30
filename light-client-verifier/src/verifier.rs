@@ -289,7 +289,7 @@ where
         ensure_verdict_success!(self.verify_validator_sets(&untrusted));
         ensure_verdict_success!(self.validate_against_trusted(&untrusted, &trusted, options, now));
         ensure_verdict_success!(self.check_header_is_from_past(&untrusted, options, now));
-       ensure_verdict_success!(self.verify_commit(&untrusted, &trusted, options));
+        ensure_verdict_success!(self.verify_commit(&untrusted, &trusted, options));
 
         Verdict::Success
     }

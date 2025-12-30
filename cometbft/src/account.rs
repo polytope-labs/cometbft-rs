@@ -142,7 +142,7 @@ mod key_conversions {
                 PublicKey::Bls12_381(pk) => {
                     let digest = Sha256::digest(&pk);
                     Id(digest[..LENGTH].try_into().unwrap())
-                }
+                },
             }
         }
     }
@@ -225,12 +225,12 @@ cometbft_old_pb_modules! {
 
 pub mod v1 {
     use super::{Id, LENGTH};
+    use crate::public_key::PUB_KEY_TYPE_BLS12_381;
     #[cfg(feature = "secp256k1")]
     use crate::public_key::PUB_KEY_TYPE_SECP256K1;
     use crate::{prelude::*, public_key::PUB_KEY_TYPE_ED25519, Error};
     use digest::Digest;
     use sha2::Sha256;
-    use crate::public_key::PUB_KEY_TYPE_BLS12_381;
 
     pub fn try_from_type_and_bytes(pub_key_type: &str, pub_key_bytes: &[u8]) -> Result<Id, Error> {
         if pub_key_type == PUB_KEY_TYPE_ED25519 {
