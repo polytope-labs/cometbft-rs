@@ -77,5 +77,11 @@ pub mod public_key {
             with = "crate::serializers::bytes::base64string"
         )]
         Secp256k1(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "3")]
+        #[serde(
+            rename = "cometbft/PubKeyBls12_381",
+            with = "crate::serializers::bytes::base64string"
+        )]
+        Bls12_381(::prost::alloc::vec::Vec<u8>),
     }
 }

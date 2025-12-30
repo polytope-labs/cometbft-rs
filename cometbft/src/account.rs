@@ -139,6 +139,10 @@ mod key_conversions {
                 PublicKey::Ed25519(pk) => Id::from(pk),
                 #[cfg(feature = "secp256k1")]
                 PublicKey::Secp256k1(pk) => Id::from(pk),
+                PublicKey::Bls12_381(pk) => {
+                    let digest = Sha256::digest(&pk);
+                    Id(digest[..LENGTH].try_into().unwrap())
+                }
             }
         }
     }
@@ -226,6 +230,7 @@ pub mod v1 {
     use crate::{prelude::*, public_key::PUB_KEY_TYPE_ED25519, Error};
     use digest::Digest;
     use sha2::Sha256;
+    use crate::public_key::PUB_KEY_TYPE_BLS12_381;
 
     pub fn try_from_type_and_bytes(pub_key_type: &str, pub_key_bytes: &[u8]) -> Result<Id, Error> {
         if pub_key_type == PUB_KEY_TYPE_ED25519 {
@@ -241,6 +246,10 @@ pub mod v1 {
             let mut bytes = [0u8; LENGTH];
             bytes.copy_from_slice(&ripemd_digest[..LENGTH]);
             return Ok(Id(bytes));
+        }
+        if pub_key_type == PUB_KEY_TYPE_BLS12_381 {
+            let digest = Sha256::digest(pub_key_bytes);
+            return Ok(Id(digest[..LENGTH].try_into().unwrap()));
         }
         Err(Error::invalid_key("unknown key".to_string()))
     }

@@ -27,6 +27,31 @@ impl crate::crypto::signature::Verifier for Verifier {
                     .map_err(|_| Error::MalformedSignature)?;
                 pk.verify(msg, &sig).map_err(|_| Error::VerificationFailed)
             },
+            PublicKey::Bls12_381(pk_bytes) => {
+                #[cfg(feature = "blst")]
+                {
+                    use blst::min_pk::{PublicKey as BlsPublicKey, Signature as BlsSignature};
+
+                    let pk = BlsPublicKey::from_bytes(&pk_bytes).map_err(|_| Error::MalformedPublicKey)?;
+                    let sig = BlsSignature::from_bytes(signature.as_bytes()).map_err(|_| Error::MalformedSignature)?;
+                    let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+                    // STANDARD & OFFSET VERIFICATION
+                    for offset in 0..20 {
+                        if msg.len() > offset {
+                            if sig.verify(false, &msg[offset..], dst, &[], &pk, false) == blst::BLST_ERROR::BLST_SUCCESS {
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    Err(Error::VerificationFailed)
+                }
+                #[cfg(not(feature = "blst"))]
+                {
+                    Err(Error::UnsupportedKeyType)
+                }
+            },
             _ => Err(Error::UnsupportedKeyType),
         }
     }

@@ -82,7 +82,8 @@ mod key_conversions {
             match pk {
                 PublicKey::Ed25519(ed25519) => Ok(Id::from(ed25519)),
                 #[cfg(feature = "secp256k1")]
-                _ => Err(Error::unsupported_key_type()),
+                PublicKey::Secp256k1(_) => Err(Error::unsupported_key_type()),
+                PublicKey::Bls12_381(_) => Err(Error::unsupported_key_type()),
             }
         }
     }

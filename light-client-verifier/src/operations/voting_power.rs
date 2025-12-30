@@ -211,6 +211,14 @@ impl NonAbsentCommitVote {
                 signature,
             } => (*validator_address, *timestamp, signature),
             CommitSig::BlockIdFlagNil { .. } => return None,
+            CommitSig::BlockIdFlagAggCommit {
+                validator_address,
+                timestamp,
+                signature
+            } => (*validator_address, *timestamp, signature),
+            CommitSig::BlockIdFlagAggNil { .. } |
+            CommitSig::BlockIdFlagAggCommitAbsent { .. } |
+            CommitSig::BlockIdFlagAggNilAbsent { .. } => return None
         };
 
         let vote = Vote {

@@ -81,8 +81,8 @@ mod v1 {
         fn from(value: PubKeyResponse) -> Self {
             RawPubKeyResponse {
                 error: value.error.map(Into::into),
-                pub_key_bytes: match value.pub_key {
-                    Some(pub_key) => pub_key.to_bytes(),
+                pub_key_bytes: match value.pub_key.clone() {
+                    Some( pub_key) => pub_key.to_bytes(),
                     None => Default::default(),
                 },
                 pub_key_type: match value.pub_key {

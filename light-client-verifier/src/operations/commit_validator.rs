@@ -50,6 +50,11 @@ pub trait CommitValidator: Send + Sync {
                 CommitSig::BlockIdFlagNil {
                     validator_address, ..
                 } => validator_address,
+                CommitSig::BlockIdFlagAggCommit { validator_address, .. } =>
+                    validator_address,
+                CommitSig::BlockIdFlagAggCommitAbsent { validator_address, .. } => validator_address,
+                CommitSig::BlockIdFlagAggNil { validator_address, .. } => validator_address,
+                CommitSig::BlockIdFlagAggNilAbsent { validator_address, .. } => validator_address
             };
 
             if validator_set.validator(*validator_address).is_none() {

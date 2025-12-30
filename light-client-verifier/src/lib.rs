@@ -10,6 +10,11 @@ pub mod options;
 pub mod predicates;
 pub mod types;
 mod verifier;
+#[cfg(test)]
+mod test;
+
+#[cfg(test)]
+mod debug_berachain;
 
 pub use verifier::{PredicateVerifier, Verdict, Verifier};
 
