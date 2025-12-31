@@ -3,14 +3,11 @@ extern crate std;
 use crate::options::Options;
 use crate::types::LightBlock;
 use crate::{ProdVerifier, Verdict, Verifier};
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use cometbft::block::CommitSig;
-use cometbft_testgen::{light_block::LightBlock as TestgenLightBlock, Generator};
-use core::convert::TryInto;
+use cometbft_rpc::{Client, HttpClient, Paging};
 use core::time::Duration;
-use serde_json::Value;
 
 use blst::min_pk::{PublicKey, Signature};
 use blst::BLST_ERROR;
@@ -33,7 +30,7 @@ pub struct CanonicalVote {
 
     // Field 5 (Timestamp) is removed/reserved in Berachain
     #[prost(string, tag = "6")]
-    pub chain_id: String,
+    pub chain_id: alloc::string::String,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -54,273 +51,58 @@ pub struct CanonicalPartSetHeader {
     pub hash: Vec<u8>,
 }
 
-fn fetch_light_block(height: u64) -> LightBlock {
-    let client = reqwest::blocking::Client::new();
+/// Fetch a LightBlock using the CometBFT RPC client.
+///
+/// Uses the HTTP client to fetch:
+/// - Signed header via `commit` endpoint
+/// - Validators via `validators` endpoint with pagination
+async fn fetch_light_block_async(client: &HttpClient, height: u64) -> LightBlock {
+    use cometbft::block::Height;
 
-    let rpc_url = std::env::var("RPC_URL")
-        .unwrap_or_else(|_| "https://hyperbridge.rpc-mainnet.berachain.com".to_string());
-    let api_key = std::env::var("API_KEY").unwrap_or_else(|_| "".to_string());
+    let height: Height = (height as u32).into();
 
-    let commit_url = format!("{}/commit?height={}&apikey={}", rpc_url, height, api_key);
-    let commit_resp: Value = client.get(&commit_url).send().unwrap().json().unwrap();
+    // Fetch signed header via commit endpoint
+    std::println!("Fetching signed header at height {}...", height);
+    let commit_response = client.commit(height).await.expect("Failed to fetch commit");
+    let signed_header = commit_response.signed_header;
 
-    // Fetch ALL Validators
-    let mut all_vals_json = Vec::new();
-    let mut page = 1;
-    let per_page = 100;
+    // Fetch ALL validators with pagination
+    std::println!("Fetching validators at height {}...", height);
+    let validators_response = client
+        .validators(height, Paging::All)
+        .await
+        .expect("Failed to fetch validators");
 
-    loop {
-        let vals_url = format!(
-            "{}/validators?height={}&per_page={}&page={}&apikey={}",
-            rpc_url, height, per_page, page, api_key
-        );
-        std::println!("Fetching validators page {}: {}", page, vals_url);
+    // Fetch next validators (height + 1)
+    let next_height: Height = ((height.value() + 1) as u32).into();
+    std::println!("Fetching next validators at height {}...", next_height);
+    let next_validators_response = client
+        .validators(next_height, Paging::All)
+        .await
+        .expect("Failed to fetch next validators");
 
-        let vals_resp: Value = client.get(&vals_url).send().unwrap().json().unwrap();
-        let result = &vals_resp["result"];
+    std::println!(
+        "Fetched {} validators, {} next validators",
+        validators_response.validators.len(),
+        next_validators_response.validators.len()
+    );
 
-        if let Some(vals) = result["validators"].as_array() {
-            all_vals_json.extend_from_slice(vals);
-        }
-
-        let total_str = result["total"].as_str().unwrap_or("0");
-        let total: usize = total_str.parse().unwrap_or(0);
-
-        if all_vals_json.len() >= total
-            || result["validators"]
-                .as_array()
-                .map_or(true, |v| v.is_empty())
-        {
-            break;
-        }
-        page += 1;
+    // Build the LightBlock
+    LightBlock {
+        signed_header,
+        validators: cometbft::validator::Set::new(validators_response.validators, None),
+        next_validators: cometbft::validator::Set::new(next_validators_response.validators, None),
+        provider: "0000000000000000000000000000000000000000".parse().unwrap(),
     }
+}
 
-    // Fetch ALL next validators (same pagination logic as current validators)
-    let mut all_next_vals_json = Vec::new();
-    let mut next_page = 1;
-    loop {
-        let next_vals_url = format!(
-            "{}/validators?height={}&per_page={}&page={}&apikey={}",
-            rpc_url,
-            height + 1,
-            per_page,
-            next_page,
-            api_key
-        );
-        std::println!(
-            "Fetching next validators page {}: {}",
-            next_page,
-            next_vals_url
-        );
-
-        let next_vals_resp: Value = client.get(&next_vals_url).send().unwrap().json().unwrap();
-        let result = &next_vals_resp["result"];
-
-        if let Some(vals) = result["validators"].as_array() {
-            all_next_vals_json.extend_from_slice(vals);
-        }
-
-        let total_str = result["total"].as_str().unwrap_or("0");
-        let total: usize = total_str.parse().unwrap_or(0);
-
-        if all_next_vals_json.len() >= total
-            || result["validators"]
-                .as_array()
-                .map_or(true, |v| v.is_empty())
-        {
-            break;
-        }
-        next_page += 1;
-    }
-
-    let json_header = &commit_resp["result"]["signed_header"]["header"];
-    let json_commit = &commit_resp["result"]["signed_header"]["commit"];
-
-    let mut light_block: LightBlock = TestgenLightBlock::new_default(1)
-        .generate()
-        .expect("failed to generate scaffold")
-        .into();
-
-    let parse_u64 = |v: &Value| -> u64 {
-        if let Some(s) = v.as_str() {
-            s.parse().unwrap()
-        } else if let Some(n) = v.as_u64() {
-            n
-        } else if v.is_null() {
-            0
-        } else {
-            panic!("Expected string or u64 for json field, got: {:?}", v);
-        }
-    };
-
-    light_block.signed_header.header.version.block = parse_u64(&json_header["version"]["block"]);
-    light_block.signed_header.header.version.app = parse_u64(&json_header["version"]["app"]);
-
-    light_block.signed_header.header.chain_id =
-        json_header["chain_id"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.height = (parse_u64(&json_header["height"]) as u32).into();
-
-    let time_str = json_header["time"].as_str().unwrap();
-    let vote_time: cometbft::Time = time_str.parse().expect("Failed to parse header time");
-    light_block.signed_header.header.time = vote_time;
-
-    let lb_id = &json_header["last_block_id"];
-    light_block.signed_header.header.last_block_id =
-        if lb_id["hash"].as_str().unwrap_or("").is_empty() {
-            None
-        } else {
-            Some(cometbft::block::Id {
-                hash: lb_id["hash"].as_str().unwrap().parse().unwrap(),
-                part_set_header: cometbft::block::parts::Header::new(
-                    lb_id["parts"]["total"].as_u64().unwrap() as u32,
-                    lb_id["parts"]["hash"].as_str().unwrap().parse().unwrap(),
-                )
-                .unwrap(),
-            })
-        };
-
-    light_block.signed_header.header.last_commit_hash = json_header["last_commit_hash"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap());
-    light_block.signed_header.header.data_hash = json_header["data_hash"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap());
-    light_block.signed_header.header.validators_hash = json_header["validators_hash"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    light_block.signed_header.header.next_validators_hash = json_header["next_validators_hash"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    light_block.signed_header.header.consensus_hash = json_header["consensus_hash"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    light_block.signed_header.header.app_hash =
-        json_header["app_hash"].as_str().unwrap().parse().unwrap();
-    light_block.signed_header.header.last_results_hash = json_header["last_results_hash"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap());
-    light_block.signed_header.header.evidence_hash = json_header["evidence_hash"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap());
-    light_block.signed_header.header.proposer_address = json_header["proposer_address"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    light_block.signed_header.commit.height = (parse_u64(&json_commit["height"]) as u32).into();
-    light_block.signed_header.commit.round = (parse_u64(&json_commit["round"]) as u16).into();
-
-    light_block.signed_header.commit.block_id.hash = json_commit["block_id"]["hash"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    light_block.signed_header.commit.block_id.part_set_header =
-        cometbft::block::parts::Header::new(
-            json_commit["block_id"]["parts"]["total"].as_u64().unwrap() as u32,
-            json_commit["block_id"]["parts"]["hash"]
-                .as_str()
-                .unwrap()
-                .parse()
-                .unwrap(),
-        )
-        .unwrap();
-
-    let raw_sigs = json_commit["signatures"].as_array().unwrap();
-    let mut new_sigs = Vec::new();
-
-    for sig in raw_sigs {
-        let flag = sig["block_id_flag"].as_u64().unwrap();
-        let addr_str = sig["validator_address"].as_str().unwrap_or("");
-
-        let addr = if addr_str.is_empty() {
-            cometbft::account::Id::new([0u8; 20])
-        } else {
-            addr_str.parse().unwrap()
-        };
-
-        let signature_bytes = if let Some(s) = sig["signature"].as_str() {
-            use base64::{engine::general_purpose, Engine as _};
-            general_purpose::STANDARD
-                .decode(s)
-                .expect("Failed to decode signature base64")
-        } else {
-            Vec::new()
-        };
-
-        let parsed_sig = match flag {
-            2 => CommitSig::BlockIdFlagCommit {
-                validator_address: addr,
-                timestamp: vote_time,
-                signature: Some(signature_bytes.try_into().unwrap()),
-            },
-            4 => CommitSig::BlockIdFlagAggCommit {
-                validator_address: addr,
-                timestamp: vote_time,
-                signature: Some(signature_bytes.try_into().unwrap()),
-            },
-            5 => CommitSig::BlockIdFlagAggCommitAbsent {
-                validator_address: addr,
-                timestamp: vote_time,
-                signature: None,
-            },
-            1 => CommitSig::BlockIdFlagAbsent,
-            _ => CommitSig::BlockIdFlagAbsent,
-        };
-        new_sigs.push(parsed_sig);
-    }
-    light_block.signed_header.commit.signatures = new_sigs;
-
-    let parse_vals = |json_vals: &[Value]| -> Vec<cometbft::validator::Info> {
-        let mut vals = Vec::new();
-        for v in json_vals {
-            let address = v["address"].as_str().unwrap().parse().unwrap();
-            let voting_power: u64 = v["voting_power"].as_str().unwrap().parse().unwrap();
-            let proposer_priority: i64 = v["proposer_priority"].as_str().unwrap().parse().unwrap();
-
-            let pub_key: cometbft::PublicKey = serde_json::from_value(v["pub_key"].clone())
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to parse public key: {:?} Error: {}",
-                        v["pub_key"], e
-                    )
-                });
-
-            let val = cometbft::validator::Info {
-                address,
-                pub_key,
-                power: voting_power.try_into().unwrap(),
-                proposer_priority: proposer_priority.into(),
-                name: None,
-            };
-            vals.push(val);
-        }
-        vals
-    };
-
-    // Strict CometBFT Sorting: Power Descending, then Address Ascending
-    light_block.validators = cometbft::validator::Set::new(parse_vals(&all_vals_json), None);
-    light_block.next_validators =
-        cometbft::validator::Set::new(parse_vals(&all_next_vals_json), None);
-    light_block.provider = "0000000000000000000000000000000000000000".parse().unwrap();
-
-    light_block
+/// Synchronous wrapper for fetch_light_block_async
+fn fetch_light_block(client: &HttpClient, height: u64) -> LightBlock {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(fetch_light_block_async(client, height))
 }
 
 // Convert 96-byte Uncompressed G1 -> 48-byte Compressed G1
-// Naive implementation: take X coordinate, set high bit.
 fn compress_pk_naive(k: &[u8]) -> Vec<u8> {
     if k.len() == 96 {
         let mut compressed = k[0..48].to_vec();
@@ -519,29 +301,30 @@ fn verify_bls_aggregation(light_block: &LightBlock) {
 /// Test for verifying Berachain BLS aggregated signatures.
 ///
 /// This test demonstrates that:
-/// Manual BLS aggregation verification WORKS with length-prefixed protobuf (no timestamp)
-///
-/// For aggregated BLS signatures, the canonical vote should NOT include timestamp (field 5),
-/// and the verification should aggregate all participating validators' public keys before
-/// verifying against the single aggregated signature.
+/// - The CometBFT RPC client can fetch signed headers and validators
+/// - Manual BLS aggregation verification works with length-prefixed protobuf (no timestamp)
+/// - Production verification works via ProdVerifier
 #[test]
 #[ignore]
 fn verify_live_berachain_header_update() {
+    let rpc_url =
+        std::env::var("RPC_URL").unwrap_or_else(|_| "https://rpc-bera.rhino.fi".to_string());
+
+    std::println!("Creating HTTP client for {}...", rpc_url);
+    let client = HttpClient::new(rpc_url.as_str()).expect("Failed to create HTTP client");
+
     let trusted_height = 14737892;
     std::println!("Fetching trusted block at height {}...", trusted_height);
-    let trusted_block = fetch_light_block(trusted_height);
+    let trusted_block = fetch_light_block(&client, trusted_height);
 
     let untrusted_height = trusted_height + 1;
     std::println!("Fetching untrusted block at height {}...", untrusted_height);
-    let untrusted_block = fetch_light_block(untrusted_height);
+    let untrusted_block = fetch_light_block(&client, untrusted_height);
 
-    // This manual check should pass - it uses the correct message format
-    // (length-prefixed protobuf without timestamp)
+    // Manual BLS verification check
     verify_bls_aggregation(&untrusted_block);
 
-    // Note: Production verification currently fails because:
-    // 1. sign_bytes include timestamp which aggregated BLS signatures don't use
-    // 2. It tries to verify individual signatures instead of the aggregated signature
+    // Production verification via ProdVerifier
     let verifier = ProdVerifier::default();
 
     let options = Options {
