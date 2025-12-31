@@ -501,22 +501,12 @@ impl NonAbsentCommitVotes {
             chain_id: header.chain_id.as_str().to_string(),
         };
 
-        // Encode to protobuf with length prefix
+        // Encode to length-delimited protobuf (CometBFT sign bytes format)
+        // This prefixes the message with its length as a varint
         let mut buf = Vec::new();
-        vote.encode(&mut buf)
+        vote.encode_length_delimited(&mut buf)
             .expect("encoding canonical vote should never fail");
-
-        // Create length-prefixed version (CometBFT style - varint length prefix)
-        let mut result = Vec::new();
-        let len = buf.len();
-        if len < 128 {
-            result.push(len as u8);
-        } else {
-            result.push(((len & 0x7F) | 0x80) as u8);
-            result.push((len >> 7) as u8);
-        }
-        result.extend_from_slice(&buf);
-        result
+        buf
     }
 
     /// Returns true if this is a beacon-kit (Berachain) signed header with BLS aggregated signatures.
