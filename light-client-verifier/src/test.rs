@@ -53,44 +53,26 @@ async fn fetch_light_block_async(client: &HttpClient, height: u64) -> LightBlock
     }
 }
 
-/// Synchronous wrapper for fetch_light_block_async
-fn fetch_light_block(client: &HttpClient, height: u64) -> LightBlock {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(fetch_light_block_async(client, height))
-}
-
-// Convert 96-byte Uncompressed G1 -> 48-byte Compressed G1
-fn compress_pk_naive(k: &[u8]) -> Vec<u8> {
-    if k.len() == 96 {
-        let mut compressed = k[0..48].to_vec();
-        // Set compressed bit (0x80)
-        compressed[0] |= 0x80;
-        return compressed;
-    }
-    k.to_vec()
-}
-
 /// Test for verifying Berachain BLS aggregated signatures.
 ///
 /// This test demonstrates that:
 /// - The CometBFT RPC client can fetch signed headers and validators
 /// - Manual BLS aggregation verification works with length-prefixed protobuf (no timestamp)
 /// - Production verification works via ProdVerifier
-#[test]
-#[ignore]
-fn verify_live_berachain_header_update() {
-    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "".to_string());
+#[tokio::test]
+async fn verify_live_berachain_header_update() {
+    let rpc_url = std::env::var("BERACHAIN_RPC_URL").expect("BERACHAIN_RPC_URL not found in environment");
 
     std::println!("Creating HTTP client for {}...", rpc_url);
     let client = HttpClient::new(rpc_url.as_str()).expect("Failed to create HTTP client");
 
-    let trusted_height = 14737892;
+    let trusted_height = client.latest_commit().await.expect("Failed to fetch latest block").signed_header.header.height.value() - 5;
     std::println!("Fetching trusted block at height {}...", trusted_height);
-    let trusted_block = fetch_light_block(&client, trusted_height);
+    let trusted_block = fetch_light_block_async(&client, trusted_height).await;
 
     let untrusted_height = trusted_height + 1;
     std::println!("Fetching untrusted block at height {}...", untrusted_height);
-    let untrusted_block = fetch_light_block(&client, untrusted_height);
+    let untrusted_block = fetch_light_block_async(&client, untrusted_height).await;
 
     // Production verification via ProdVerifier
     let verifier = ProdVerifier::default();
