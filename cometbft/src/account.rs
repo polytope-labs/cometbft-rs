@@ -141,7 +141,9 @@ mod key_conversions {
                 PublicKey::Secp256k1(pk) => Id::from(pk),
                 PublicKey::Bls12_381(pk) => {
                     let digest = Sha256::digest(&pk);
-                    Id(digest[..LENGTH].try_into().unwrap())
+                    Id(digest[..LENGTH]
+                        .try_into()
+                        .expect("Invalid account id length"))
                 },
             }
         }
@@ -249,7 +251,9 @@ pub mod v1 {
         }
         if pub_key_type == PUB_KEY_TYPE_BLS12_381 {
             let digest = Sha256::digest(pub_key_bytes);
-            return Ok(Id(digest[..LENGTH].try_into().unwrap()));
+            return Ok(Id(digest[..LENGTH]
+                .try_into()
+                .expect("Invalid account length")));
         }
         Err(Error::invalid_key("unknown key".to_string()))
     }

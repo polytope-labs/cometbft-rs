@@ -81,7 +81,7 @@ pub mod public_key {
         #[serde(
             rename = "cometbft/PubKeyBls12381",
             alias = "tendermint/PubKeyBls12_381",
-            alias = "cometbft/PubKeyBls12381",
+            alias = "cometbft/PubKeyBls12_381",
             with = "crate::serializers::bytes::base64string"
         )]
         Bls12_381(::prost::alloc::vec::Vec<u8>),
