@@ -308,7 +308,7 @@ fn verify_bls_aggregation(light_block: &LightBlock) {
 #[ignore]
 fn verify_live_berachain_header_update() {
     let rpc_url =
-        std::env::var("RPC_URL").unwrap_or_else(|_| "https://rpc-bera.rhino.fi".to_string());
+        std::env::var("RPC_URL").unwrap_or_else(|_| "".to_string());
 
     std::println!("Creating HTTP client for {}...", rpc_url);
     let client = HttpClient::new(rpc_url.as_str()).expect("Failed to create HTTP client");
