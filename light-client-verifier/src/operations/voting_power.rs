@@ -677,26 +677,28 @@ impl NonAbsentCommitVotes {
         if let Some(ref nil_sig) = nil_signature_clone {
             let nil_keys = collect_bls_keys(&nil_addresses_clone);
 
-            if !nil_keys.is_empty() {
-                let sig_bytes = nil_sig.as_bytes();
-                let agg_sig = BlsSignature::from_bytes(sig_bytes).map_err(|_| {
-                    VerificationError::invalid_signature(
-                        sig_bytes.to_vec(),
-                        Box::new(validator_set.validators()[0].clone()),
-                        sign_bytes_clone.clone(),
-                    )
-                })?;
+            if nil_keys.is_empty() {
+                return Err(VerificationError::missing_signature());
+            }
 
-                let pk_refs: Vec<&BlsPublicKey> = nil_keys.iter().collect();
-                let result = agg_sig.fast_aggregate_verify(false, &sign_bytes_clone, dst, &pk_refs);
+            let sig_bytes = nil_sig.as_bytes();
+            let agg_sig = BlsSignature::from_bytes(sig_bytes).map_err(|_| {
+                VerificationError::invalid_signature(
+                    sig_bytes.to_vec(),
+                    Box::new(validator_set.validators()[0].clone()),
+                    sign_bytes_clone.clone(),
+                )
+            })?;
 
-                if result != blst::BLST_ERROR::BLST_SUCCESS {
-                    return Err(VerificationError::invalid_signature(
-                        sig_bytes.to_vec(),
-                        Box::new(validator_set.validators()[0].clone()),
-                        sign_bytes_clone.clone(),
-                    ));
-                }
+            let pk_refs: Vec<&BlsPublicKey> = nil_keys.iter().collect();
+            let result = agg_sig.fast_aggregate_verify(false, &sign_bytes_clone, dst, &pk_refs);
+
+            if result != blst::BLST_ERROR::BLST_SUCCESS {
+                return Err(VerificationError::invalid_signature(
+                    sig_bytes.to_vec(),
+                    Box::new(validator_set.validators()[0].clone()),
+                    sign_bytes_clone.clone(),
+                ));
             }
         }
 
