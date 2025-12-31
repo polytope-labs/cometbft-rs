@@ -1,5 +1,6 @@
 //! Provides an interface and default implementation for the `VotingPower` operation
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::{convert::TryFrom, fmt, marker::PhantomData};
 
@@ -13,7 +14,63 @@ use cometbft::{
     vote::{SignedVote, ValidatorIndex, Vote},
     PublicKey, Signature,
 };
+use prost::Message;
 use serde::{Deserialize, Serialize};
+
+// --- Protobuf Definitions for Berachain BLS Verification (No Timestamp) ---
+// These structs match the Berachain spec where the timestamp field is removed
+// from the canonical vote. Using a separate struct avoids any prost encoding
+// issues with Option<Time> where None might add an extra byte.
+
+/// Canonical vote without timestamp field for BLS aggregated signature verification.
+/// Used by Berachain's beacon-kit.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalVoteNoTimestamp {
+    /// Vote type (2 for Precommit)
+    #[prost(int32, tag = "1")]
+    pub r#type: i32,
+
+    /// Block height
+    #[prost(sfixed64, tag = "2")]
+    pub height: i64,
+
+    /// Voting round
+    #[prost(sfixed64, tag = "3")]
+    pub round: i64,
+
+    /// Block ID being voted on
+    #[prost(message, optional, tag = "4")]
+    pub block_id: Option<CanonicalBlockId>,
+
+    // Field 5 (Timestamp) is intentionally omitted for Berachain
+    /// Chain ID
+    #[prost(string, tag = "6")]
+    pub chain_id: alloc::string::String,
+}
+
+/// Canonical block ID for BLS verification.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalBlockId {
+    /// Block hash
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+
+    /// Part set header
+    #[prost(message, optional, tag = "2")]
+    pub part_set_header: Option<CanonicalPartSetHeader>,
+}
+
+/// Canonical part set header for BLS verification.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalPartSetHeader {
+    /// Total parts
+    #[prost(uint32, tag = "1")]
+    pub total: u32,
+
+    /// Part set hash
+    #[prost(bytes = "vec", tag = "2")]
+    pub hash: Vec<u8>,
+}
 
 use crate::{
     errors::VerificationError,
@@ -417,27 +474,49 @@ impl NonAbsentCommitVotes {
     }
 
     /// Construct canonical vote sign bytes WITHOUT timestamp (for BLS aggregated signatures).
+    ///
+    /// Uses `CanonicalVoteNoTimestamp` which has no timestamp field at all,
+    /// matching the Berachain spec and avoiding potential prost encoding issues
+    /// with `Option<Time>` where `None` might add an extra byte.
     fn construct_sign_bytes_no_timestamp(signed_header: &SignedHeader) -> Vec<u8> {
-        use cometbft::vote::CanonicalVote;
-        use cometbft_proto::Protobuf;
-
         let commit = &signed_header.commit;
         let header = &signed_header.header;
 
-        // Create canonical vote with timestamp set to None
-        let canonical_vote = CanonicalVote {
-            vote_type: cometbft::vote::Type::Precommit,
-            height: commit.height,
-            round: commit.round,
-            block_id: Some(commit.block_id),
-            timestamp: None, // No timestamp for BLS aggregated signatures
-            chain_id: header.chain_id.clone(),
+        let part_set_header = CanonicalPartSetHeader {
+            total: commit.block_id.part_set_header.total,
+            hash: commit.block_id.part_set_header.hash.as_bytes().to_vec(),
+        };
+
+        let block_id = CanonicalBlockId {
+            hash: commit.block_id.hash.as_bytes().to_vec(),
+            part_set_header: Some(part_set_header),
+        };
+
+        // Create canonical vote without timestamp field (Berachain spec)
+        let vote = CanonicalVoteNoTimestamp {
+            r#type: 2, // SIGNED_MSG_TYPE_PRECOMMIT
+            height: commit.height.value() as i64,
+            round: commit.round.value() as i64,
+            block_id: Some(block_id),
+            chain_id: header.chain_id.as_str().to_string(),
         };
 
         // Encode to protobuf with length prefix
-        Protobuf::<cometbft_proto::types::v1::CanonicalVote>::encode_length_delimited_vec(
-            canonical_vote,
-        )
+        let mut buf = Vec::new();
+        vote.encode(&mut buf)
+            .expect("encoding canonical vote should never fail");
+
+        // Create length-prefixed version (CometBFT style - varint length prefix)
+        let mut result = Vec::new();
+        let len = buf.len();
+        if len < 128 {
+            result.push(len as u8);
+        } else {
+            result.push(((len & 0x7F) | 0x80) as u8);
+            result.push((len >> 7) as u8);
+        }
+        result.extend_from_slice(&buf);
+        result
     }
 
     /// Returns true if this is a beacon-kit (Berachain) signed header with BLS aggregated signatures.
