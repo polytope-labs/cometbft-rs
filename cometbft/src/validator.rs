@@ -182,7 +182,7 @@ impl Info {
     where
         V: Verifier,
     {
-        V::verify(self.pub_key, sign_bytes, signature)
+        V::verify(self.pub_key.clone(), sign_bytes, signature)
             .map_err(|_| Error::signature_invalid("Ed25519 signature verification failed".into()))
     }
 
@@ -190,7 +190,7 @@ impl Info {
     /// Create a new validator.
     pub fn new(pk: PublicKey, vp: vote::Power) -> Info {
         Info {
-            address: account::Id::from(pk),
+            address: account::Id::from(pk.clone()),
             pub_key: pk,
             power: vp,
             name: None,
@@ -216,7 +216,7 @@ pub struct SimpleValidator {
 impl From<&Info> for SimpleValidator {
     fn from(info: &Info) -> SimpleValidator {
         SimpleValidator {
-            pub_key: info.pub_key,
+            pub_key: info.pub_key.clone(),
             voting_power: info.power,
         }
     }
@@ -469,7 +469,7 @@ mod v1 {
                 pub_key: None, // pub_key is deprecated in v1
                 voting_power: value.power.into(),
                 proposer_priority: value.proposer_priority.into(),
-                pub_key_bytes: value.pub_key.to_bytes(),
+                pub_key_bytes: value.pub_key.clone().to_bytes(),
                 pub_key_type: value.pub_key.type_str().to_owned(),
             }
         }
@@ -506,7 +506,7 @@ mod v1 {
         fn from(vu: Update) -> Self {
             Self {
                 power: vu.power.into(),
-                pub_key_bytes: vu.pub_key.to_bytes().into(),
+                pub_key_bytes: vu.pub_key.clone().to_bytes().into(),
                 pub_key_type: vu.pub_key.type_str().to_owned(),
             }
         }

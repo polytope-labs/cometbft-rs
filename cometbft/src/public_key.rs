@@ -23,6 +23,7 @@ pub const PUB_KEY_TYPE_ED25519: &'static str = "tendermint/PubKeyEd25519";
 /// Secp256k1 public key type string.
 #[cfg(feature = "secp256k1")]
 pub const PUB_KEY_TYPE_SECP256K1: &'static str = "tendermint/PubKeySecp256k1";
+pub const PUB_KEY_TYPE_BLS12_381: &'static str = "cometbft/PubKeyBls12_381";
 
 // Note:On the golang side this is generic in the sense that it could everything that implements
 // github.com/cometbft/cometbft/crypto.PubKey
@@ -35,7 +36,7 @@ pub const PUB_KEY_TYPE_SECP256K1: &'static str = "tendermint/PubKeySecp256k1";
 //          All changes to the serialization should check both the JSON and protobuf conversions.
 // Todo: Merge JSON serialization with #[serde(try_from = "RawPublicKey", into = "RawPublicKey)]
 /// Public keys allowed in CometBFT protocols
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(tag = "type", content = "value")] // JSON custom serialization for priv_validator_key.json
 pub enum PublicKey {
@@ -56,6 +57,13 @@ pub enum PublicKey {
         deserialize_with = "deserialize_secp256k1_base64"
     )]
     Secp256k1(Secp256k1),
+
+    #[serde(
+        rename = "cometbft/PubKeyBls12_381",
+        serialize_with = "serialize_bls12_381_base64",
+        deserialize_with = "deserialize_bls12_381_base64"
+    )]
+    Bls12_381(Vec<u8>),
 }
 
 impl PublicKey {
@@ -71,6 +79,7 @@ impl PublicKey {
             PUB_KEY_TYPE_SECP256K1 => Secp256k1::from_sec1_bytes(bytes)
                 .map(PublicKey::Secp256k1)
                 .map_err(|_| Error::invalid_key("malformed Secp256k1 public key".into())),
+            PUB_KEY_TYPE_BLS12_381 => Ok(PublicKey::Bls12_381(bytes.to_vec())),
             _ => Err(Error::invalid_key(format!("unknown public key type: {t}"))),
         }
     }
@@ -80,6 +89,7 @@ impl PublicKey {
             PublicKey::Ed25519(_) => PUB_KEY_TYPE_ED25519,
             #[cfg(feature = "secp256k1")]
             PublicKey::Secp256k1(_) => PUB_KEY_TYPE_SECP256K1,
+            PublicKey::Bls12_381(_) => PUB_KEY_TYPE_BLS12_381,
         }
     }
 }
@@ -98,6 +108,7 @@ impl From<ProtobufPublicKeyWrapper> for PublicKey {
             ProtobufPublicKey::Ed25519 { ed25519 } => PublicKey::Ed25519(ed25519),
             #[cfg(feature = "secp256k1")]
             ProtobufPublicKey::Secp256k1 { secp256k1 } => PublicKey::Secp256k1(secp256k1),
+            ProtobufPublicKey::Bls12_381 { bls12_381 } => PublicKey::Bls12_381(bls12_381),
         }
     }
 }
@@ -122,6 +133,14 @@ enum ProtobufPublicKey {
             deserialize_with = "deserialize_secp256k1_base64"
         )]
         secp256k1: Secp256k1,
+    },
+    #[serde(rename = "cometbft.crypto.PublicKey_Bls12_381")]
+    Bls12_381 {
+        #[serde(
+            serialize_with = "serialize_bls12_381_base64",
+            deserialize_with = "deserialize_bls12_381_base64"
+        )]
+        bls12_381: Vec<u8>,
     },
 }
 
@@ -192,6 +211,9 @@ cometbft_old_pb_modules! {
                         pk.to_sec1_bytes().into(),
                     )),
                 },
+                 PublicKey::Bls12_381(ref pk) => RawPublicKey {
+                    sum: Some(Sum::Bls12_381(pk.clone())),
+                },
             }
         }
     }
@@ -234,6 +256,9 @@ mod v1 {
                 #[cfg(feature = "secp256k1")]
                 PublicKey::Secp256k1(ref pk) => RawPublicKey {
                     sum: Some(Sum::Secp256k1(pk.to_sec1_bytes().into())),
+                },
+                PublicKey::Bls12_381(ref pk) => RawPublicKey {
+                    sum: Some(Sum::Bls12381(pk.clone())),
                 },
             }
         }
@@ -286,6 +311,7 @@ impl PublicKey {
             PublicKey::Ed25519(pk) => pk.as_bytes().to_vec(),
             #[cfg(feature = "secp256k1")]
             PublicKey::Secp256k1(pk) => pk.to_sec1_bytes().into(),
+            PublicKey::Bls12_381(pk) => pk,
         }
     }
 
@@ -301,6 +327,11 @@ impl PublicKey {
             PublicKey::Secp256k1(ref pk) => {
                 let mut key_bytes = vec![0xEB, 0x5A, 0xE9, 0x87, 0x21];
                 key_bytes.extend(pk.to_sec1_bytes().as_ref());
+                key_bytes
+            },
+            PublicKey::Bls12_381(ref pk) => {
+                let mut key_bytes = vec![];
+                key_bytes.extend(pk);
                 key_bytes
             },
         };
@@ -344,21 +375,25 @@ impl Ord for PublicKey {
         match self {
             PublicKey::Ed25519(a) => match other {
                 PublicKey::Ed25519(b) => a.as_bytes().cmp(b.as_bytes()),
-                #[cfg(feature = "secp256k1")]
-                PublicKey::Secp256k1(_) => Ordering::Less,
+                _ => Ordering::Less,
             },
             #[cfg(feature = "secp256k1")]
             PublicKey::Secp256k1(a) => match other {
                 PublicKey::Ed25519(_) => Ordering::Greater,
                 #[cfg(feature = "secp256k1")]
                 PublicKey::Secp256k1(b) => a.cmp(b),
+                _ => Ordering::Less,
+            },
+            PublicKey::Bls12_381(a) => match other {
+                PublicKey::Bls12_381(b) => a.cmp(b),
+                _ => Ordering::Less,
             },
         }
     }
 }
 
 /// Public key roles used in CometBFT networks
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum CometbftKey {
     /// User signing keys used for interacting with accounts in the state machine
     AccountKey(PublicKey),
@@ -374,6 +409,7 @@ impl CometbftKey {
             PublicKey::Ed25519(_) => Ok(CometbftKey::AccountKey(public_key)),
             #[cfg(feature = "secp256k1")]
             PublicKey::Secp256k1(_) => Ok(CometbftKey::AccountKey(public_key)),
+            PublicKey::Bls12_381(_) => Ok(CometbftKey::AccountKey(public_key)),
         }
     }
 
@@ -384,7 +420,7 @@ impl CometbftKey {
             PublicKey::Ed25519(_) => Ok(CometbftKey::AccountKey(public_key)),
             #[cfg(feature = "secp256k1")]
             PublicKey::Secp256k1(_) => Ok(CometbftKey::AccountKey(public_key)),
-
+            PublicKey::Bls12_381(_) => Ok(CometbftKey::AccountKey(public_key)),
             _ => Err(Error::invalid_key(
                 "only ed25519 or secp256k1 consensus keys are supported".to_string(),
             )),
@@ -462,6 +498,15 @@ where
         .serialize(serializer)
 }
 
+fn serialize_bls12_381_base64<S>(pk: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: ser::Serializer,
+{
+    String::from_utf8(base64::encode(pk))
+        .unwrap()
+        .serialize(serializer)
+}
+
 /// Serialize the bytes of a secp256k1 ECDSA public key as Base64. Used for serializing JSON
 #[cfg(feature = "secp256k1")]
 fn serialize_secp256k1_base64<S>(pk: &Secp256k1, serializer: S) -> Result<S::Ok, S::Error>
@@ -492,6 +537,15 @@ where
     let encoded = String::deserialize(deserializer)?;
     let bytes = base64::decode(encoded).map_err(D::Error::custom)?;
     Secp256k1::from_sec1_bytes(&bytes).map_err(|_| D::Error::custom("invalid secp256k1 key"))
+}
+
+fn deserialize_bls12_381_base64<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use de::Error;
+    let encoded = String::deserialize(deserializer)?;
+    base64::decode(encoded).map_err(D::Error::custom)
 }
 
 #[cfg(test)]

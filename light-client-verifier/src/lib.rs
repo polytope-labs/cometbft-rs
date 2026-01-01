@@ -8,6 +8,8 @@ pub mod errors;
 pub mod operations;
 pub mod options;
 pub mod predicates;
+#[cfg(test)]
+mod test;
 pub mod types;
 mod verifier;
 

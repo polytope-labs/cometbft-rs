@@ -12,6 +12,7 @@ use crate::{error::Error, prelude::*};
 
 /// The expected length of all currently supported signatures, in bytes.
 pub const SIGNATURE_LENGTH: usize = 64;
+pub const BLS_SIGNATURE_LENGTH: usize = 96;
 
 /// Signatures
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,10 +65,11 @@ impl Signature {
         if bytes.is_empty() {
             return Ok(None);
         }
-        if bytes.len() != SIGNATURE_LENGTH {
+        if bytes.len() != SIGNATURE_LENGTH && bytes.len() != BLS_SIGNATURE_LENGTH {
             return Err(Error::signature_invalid(format!(
-                "expected signature to be {} bytes long, but was {} bytes",
+                "expected signature to be {} or {} bytes long, but was {} bytes",
                 SIGNATURE_LENGTH,
+                BLS_SIGNATURE_LENGTH,
                 bytes.len()
             )));
         }

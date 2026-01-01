@@ -1,5 +1,6 @@
 //! Provides an interface and default implementation for the `VotingPower` operation
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::{convert::TryFrom, fmt, marker::PhantomData};
 
@@ -11,8 +12,65 @@ use cometbft::{
     trust_threshold::TrustThreshold as _,
     validator,
     vote::{SignedVote, ValidatorIndex, Vote},
+    PublicKey, Signature,
 };
+use prost::Message;
 use serde::{Deserialize, Serialize};
+
+// --- Protobuf Definitions for Berachain BLS Verification (No Timestamp) ---
+// These structs match the Berachain spec where the timestamp field is removed
+// from the canonical vote. Using a separate struct avoids any prost encoding
+// issues with Option<Time> where None might add an extra byte.
+
+/// Canonical vote without timestamp field for BLS aggregated signature verification.
+/// Used by Berachain's beacon-kit.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalVoteNoTimestamp {
+    /// Vote type (2 for Precommit)
+    #[prost(int32, tag = "1")]
+    pub r#type: i32,
+
+    /// Block height
+    #[prost(sfixed64, tag = "2")]
+    pub height: i64,
+
+    /// Voting round
+    #[prost(sfixed64, tag = "3")]
+    pub round: i64,
+
+    /// Block ID being voted on
+    #[prost(message, optional, tag = "4")]
+    pub block_id: Option<CanonicalBlockId>,
+
+    // Field 5 (Timestamp) is intentionally omitted for Berachain
+    /// Chain ID
+    #[prost(string, tag = "6")]
+    pub chain_id: alloc::string::String,
+}
+
+/// Canonical block ID for BLS verification.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalBlockId {
+    /// Block hash
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+
+    /// Part set header
+    #[prost(message, optional, tag = "2")]
+    pub part_set_header: Option<CanonicalPartSetHeader>,
+}
+
+/// Canonical part set header for BLS verification.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct CanonicalPartSetHeader {
+    /// Total parts
+    #[prost(uint32, tag = "1")]
+    pub total: u32,
+
+    /// Part set hash
+    #[prost(bytes = "vec", tag = "2")]
+    pub hash: Vec<u8>,
+}
 
 use crate::{
     errors::VerificationError,
@@ -211,6 +269,18 @@ impl NonAbsentCommitVote {
                 signature,
             } => (*validator_address, *timestamp, signature),
             CommitSig::BlockIdFlagNil { .. } => return None,
+            CommitSig::BlockIdFlagAggCommit {
+                validator_address,
+                timestamp,
+                signature,
+            } => (*validator_address, *timestamp, signature),
+            CommitSig::BlockIdFlagAggNil {
+                validator_address,
+                timestamp,
+                signature,
+            } => (*validator_address, *timestamp, signature),
+            CommitSig::BlockIdFlagAggCommitAbsent { .. }
+            | CommitSig::BlockIdFlagAggNilAbsent { .. } => return None,
         };
 
         let vote = Vote {
@@ -242,30 +312,131 @@ impl NonAbsentCommitVote {
 }
 
 /// Collection of non-absent commit votes.
-struct NonAbsentCommitVotes {
-    /// Votes sorted by validator address.
-    votes: Vec<NonAbsentCommitVote>,
-    /// Internal buffer for storing sign_bytes.
-    ///
-    /// The buffer is reused for each canonical vote so that we allocate it
-    /// once.
-    sign_bytes: Vec<u8>,
+///
+/// This enum distinguishes between standard CometBFT verification (individual signatures)
+/// and BLS aggregated verification (used by Berachain's beacon-kit).
+enum NonAbsentCommitVotes {
+    /// Standard CometBFT: each validator has an individual signature verified separately.
+    Standard {
+        /// Votes sorted by validator address.
+        votes: Vec<NonAbsentCommitVote>,
+        /// Internal buffer for storing sign_bytes.
+        sign_bytes: Vec<u8>,
+    },
+    /// BLS aggregated: multiple validators' signatures are aggregated into one.
+    /// Used by Berachain's beacon-kit.
+    BlsAggregated {
+        /// The aggregated signature for block commits (mandatory)
+        commit_signature: Signature,
+        /// Addresses of validators who participated in the commit aggregation
+        commit_addresses: Vec<account::Id>,
+        /// The aggregated signature for nil votes (optional)
+        nil_signature: Option<Signature>,
+        /// Addresses of validators who participated in the nil aggregation
+        nil_addresses: Vec<account::Id>,
+        /// Sign bytes without timestamp (for BLS aggregated verification)
+        sign_bytes: Vec<u8>,
+        /// Whether the aggregated signatures have been verified
+        verified: bool,
+    },
 }
 
 impl NonAbsentCommitVotes {
     /// Initial capacity of the `sign_bytes` buffer.
     ///
     /// The buffer will be resized if it happens to be too small so this value
-    /// isn’t critical for correctness.  It’s a matter of performance to avoid
+    /// isn't critical for correctness.  It's a matter of performance to avoid
     /// reallocations.
     ///
     /// Note: As of protocol 0.38, maximum length of the sign bytes is `115 + (N > 13) + N`
     /// where `N` is the length of the chain id.
     /// Chain id can be at most 50 bytes (see [`tendermint::chain::id::MAX_LEN`])
-    /// thus the largest buffer we’ll ever need is 166 bytes long.
+    /// thus the largest buffer we'll ever need is 166 bytes long.
     const SIGN_BYTES_INITIAL_CAPACITY: usize = 166;
 
     pub fn new(signed_header: &SignedHeader) -> Result<Self, VerificationError> {
+        // First, check if this is a BLS aggregated commit (Berachain/beacon-kit)
+        if let Some(bls_votes) = Self::try_new_bls_aggregated(signed_header) {
+            return Ok(bls_votes);
+        }
+
+        // Otherwise, use standard CometBFT verification
+        Self::new_standard(signed_header)
+    }
+
+    /// Try to create a BLS aggregated variant if the commit contains aggregated signatures.
+    /// Returns None if no aggregated signatures are found or if commit_signature is missing.
+    fn try_new_bls_aggregated(signed_header: &SignedHeader) -> Option<Self> {
+        let mut commit_addresses = Vec::new();
+        let mut nil_addresses = Vec::new();
+        let mut commit_signature: Option<Signature> = None;
+        let mut nil_signature: Option<Signature> = None;
+
+        for sig in &signed_header.commit.signatures {
+            match sig {
+                CommitSig::BlockIdFlagAggCommit {
+                    validator_address,
+                    signature,
+                    ..
+                } => {
+                    commit_addresses.push(*validator_address);
+                    // The first non-None signature is the aggregated commit signature
+                    if commit_signature.is_none() {
+                        if let Some(s) = signature {
+                            commit_signature = Some(s.clone());
+                        }
+                    }
+                },
+                CommitSig::BlockIdFlagAggCommitAbsent {
+                    validator_address, ..
+                } => {
+                    commit_addresses.push(*validator_address);
+                },
+                CommitSig::BlockIdFlagAggNil {
+                    validator_address,
+                    signature,
+                    ..
+                } => {
+                    nil_addresses.push(*validator_address);
+                    // The first non-None signature is the aggregated nil signature
+                    if nil_signature.is_none() {
+                        if let Some(s) = signature {
+                            nil_signature = Some(s.clone());
+                        }
+                    }
+                },
+                CommitSig::BlockIdFlagAggNilAbsent {
+                    validator_address, ..
+                } => {
+                    nil_addresses.push(*validator_address);
+                },
+                _ => {},
+            }
+        }
+
+        // If we found no aggregated commit addresses, return None to fall back to standard
+        if commit_addresses.is_empty() {
+            return None;
+        }
+
+        // commit_signature is mandatory - if not found, fall back to standard
+        let commit_signature = commit_signature?;
+
+        // Construct sign_bytes without timestamp for BLS aggregated verification
+        let sign_bytes = Self::construct_sign_bytes_no_timestamp(signed_header);
+
+        Some(NonAbsentCommitVotes::BlsAggregated {
+            commit_signature,
+            commit_addresses,
+            nil_signature,
+            nil_addresses,
+            sign_bytes,
+            verified: false,
+        })
+    }
+
+    /// Create standard CometBFT verification variant.
+    fn new_standard(signed_header: &SignedHeader) -> Result<Self, VerificationError> {
         let mut votes = signed_header
             .commit
             .signatures
@@ -291,54 +462,255 @@ impl NonAbsentCommitVotes {
             .windows(2)
             .find(|pair| pair[0].validator_id() == pair[1].validator_id());
         if let Some(pair) = duplicate {
-            Err(VerificationError::duplicate_validator(
+            return Err(VerificationError::duplicate_validator(
                 pair[0].validator_id(),
-            ))
-        } else {
-            Ok(Self {
-                votes,
-                sign_bytes: Vec::with_capacity(Self::SIGN_BYTES_INITIAL_CAPACITY),
-            })
+            ));
         }
+
+        Ok(NonAbsentCommitVotes::Standard {
+            votes,
+            sign_bytes: Vec::with_capacity(Self::SIGN_BYTES_INITIAL_CAPACITY),
+        })
     }
 
-    /// Looks up a vote cast by given validator.
+    /// Construct canonical vote sign bytes WITHOUT timestamp (for BLS aggregated signatures).
     ///
-    /// If the validator didn’t cast a vote or voted for `nil`, returns `Ok(None)`. Otherwise, if
+    /// Uses `CanonicalVoteNoTimestamp` which has no timestamp field at all,
+    /// matching the Berachain spec and avoiding potential prost encoding issues
+    /// with `Option<Time>` where `None` might add an extra byte.
+    fn construct_sign_bytes_no_timestamp(signed_header: &SignedHeader) -> Vec<u8> {
+        let commit = &signed_header.commit;
+        let header = &signed_header.header;
+
+        let part_set_header = CanonicalPartSetHeader {
+            total: commit.block_id.part_set_header.total,
+            hash: commit.block_id.part_set_header.hash.as_bytes().to_vec(),
+        };
+
+        let block_id = CanonicalBlockId {
+            hash: commit.block_id.hash.as_bytes().to_vec(),
+            part_set_header: Some(part_set_header),
+        };
+
+        // Create canonical vote without timestamp field (Berachain spec)
+        let vote = CanonicalVoteNoTimestamp {
+            r#type: 2, // SIGNED_MSG_TYPE_PRECOMMIT
+            height: commit.height.value() as i64,
+            round: commit.round.value() as i64,
+            block_id: Some(block_id),
+            chain_id: header.chain_id.as_str().to_string(),
+        };
+
+        // Encode to length-delimited protobuf (CometBFT sign bytes format)
+        // This prefixes the message with its length as a varint
+        let mut buf = Vec::new();
+        vote.encode_length_delimited(&mut buf)
+            .expect("encoding canonical vote should never fail");
+        buf
+    }
+
+    /// Returns true if this is a beacon-kit (Berachain) signed header with BLS aggregated signatures.
+    pub fn is_beacon_kit(&self) -> bool {
+        matches!(self, NonAbsentCommitVotes::BlsAggregated { .. })
+    }
+
+    /// Looks up a vote cast by given validator (standard CometBFT verification).
+    ///
+    /// If the validator didn't cast a vote or voted for `nil`, returns `Ok(None)`. Otherwise, if
     /// the vote had valid signature, returns `Ok(Some(idx))` where idx is the validator's index.
     /// If the vote had invalid signature, returns `Err`.
+    ///
+    /// Note: This method is for standard CometBFT verification only. For beacon-kit,
+    /// use the beacon-kit verification algorithm via `verify_aggregated_bls_if_present`.
     pub fn has_voted<V: signature::Verifier>(
         &mut self,
         validator: &validator::Info,
     ) -> Result<Option<usize>, VerificationError> {
-        if let Ok(idx) = self
-            .votes
-            .binary_search_by_key(&validator.address, NonAbsentCommitVote::validator_id)
-        {
-            let vote = &mut self.votes[idx];
+        match self {
+            NonAbsentCommitVotes::BlsAggregated { .. } => {
+                // Beacon-kit uses a different verification path
+                Ok(None)
+            },
+            NonAbsentCommitVotes::Standard { votes, sign_bytes } => {
+                // Standard individual signature verification
+                if let Ok(idx) = votes
+                    .binary_search_by_key(&validator.address, NonAbsentCommitVote::validator_id)
+                {
+                    let vote = &mut votes[idx];
 
-            if !vote.verified {
-                self.sign_bytes.clear();
-                vote.signed_vote
-                    .sign_bytes_into(&mut self.sign_bytes)
-                    .expect("buffer is resized if needed and encoding never fails");
+                    if !vote.verified {
+                        sign_bytes.clear();
+                        vote.signed_vote
+                            .sign_bytes_into(sign_bytes)
+                            .expect("buffer is resized if needed and encoding never fails");
 
-                let sign_bytes = self.sign_bytes.as_slice();
-                validator
-                    .verify_signature::<V>(sign_bytes, vote.signed_vote.signature())
-                    .map_err(|_| {
-                        VerificationError::invalid_signature(
-                            vote.signed_vote.signature().as_bytes().to_vec(),
-                            Box::new(validator.clone()),
-                            sign_bytes.to_vec(),
-                        )
-                    })?;
-                vote.verified = true;
-            }
-            Ok(Some(idx))
-        } else {
-            Ok(None)
+                        let sign_bytes_slice = sign_bytes.as_slice();
+                        validator
+                            .verify_signature::<V>(sign_bytes_slice, vote.signed_vote.signature())
+                            .map_err(|_| {
+                                VerificationError::invalid_signature(
+                                    vote.signed_vote.signature().as_bytes().to_vec(),
+                                    Box::new(validator.clone()),
+                                    sign_bytes_slice.to_vec(),
+                                )
+                            })?;
+                        vote.verified = true;
+                    }
+                    Ok(Some(idx))
+                } else {
+                    Ok(None)
+                }
+            },
         }
+    }
+
+    /// Verify the aggregated BLS signatures against all participating validators.
+    ///
+    /// This should be called before checking individual votes when aggregated
+    /// BLS signatures are present. It verifies both the commit and nil aggregated
+    /// signatures using their respective participating validators' public keys.
+    ///
+    /// - `commit_signature` is mandatory and MUST be verified successfully
+    /// - `nil_signature` is optional, but if present MUST be verified successfully
+    pub fn verify_aggregated_bls_if_present(
+        &mut self,
+        validator_set: &ValidatorSet,
+    ) -> Result<(), VerificationError> {
+        use blst::min_pk::{PublicKey as BlsPublicKey, Signature as BlsSignature};
+
+        // Extract the BLS aggregated info if present and not yet verified
+        let (
+            commit_signature_clone,
+            commit_addresses_clone,
+            nil_signature_clone,
+            nil_addresses_clone,
+            sign_bytes_clone,
+        ) = match self {
+            NonAbsentCommitVotes::Standard { .. } => {
+                // Not BLS aggregated, nothing to verify
+                return Ok(());
+            },
+            NonAbsentCommitVotes::BlsAggregated { verified: true, .. } => {
+                // Already verified
+                return Ok(());
+            },
+            NonAbsentCommitVotes::BlsAggregated {
+                commit_signature,
+                commit_addresses,
+                nil_signature,
+                nil_addresses,
+                sign_bytes,
+                verified: _,
+            } => (
+                commit_signature.clone(),
+                commit_addresses.clone(),
+                nil_signature.clone(),
+                nil_addresses.clone(),
+                sign_bytes.clone(),
+            ),
+        };
+
+        // Check for duplicate addresses between commit and nil (invalid state)
+        if let Some(addr) = commit_addresses_clone
+            .iter()
+            .find(|addr| nil_addresses_clone.contains(addr))
+        {
+            return Err(VerificationError::duplicate_validator(*addr));
+        }
+
+        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+        // Helper to collect BLS public keys for a list of addresses
+        let collect_bls_keys = |addresses: &[account::Id]| -> Vec<BlsPublicKey> {
+            let mut keys = Vec::new();
+            for addr in addresses {
+                let validator = validator_set
+                    .validators()
+                    .iter()
+                    .find(|v| &v.address == addr);
+
+                if let Some(val) = validator {
+                    if let PublicKey::Bls12_381(pk_bytes) = &val.pub_key {
+                        if let Ok(pk) = BlsPublicKey::from_bytes(pk_bytes) {
+                            keys.push(pk);
+                        } else {
+                            // Try compressed format (first 48 bytes)
+                            let compressed: [u8; 48] =
+                                pk_bytes[..48].try_into().unwrap_or([0u8; 48]);
+                            if let Ok(pk) = BlsPublicKey::from_bytes(&compressed) {
+                                keys.push(pk);
+                            }
+                        }
+                    }
+                }
+            }
+            keys
+        };
+
+        // Verify aggregated commit signature
+        let commit_keys = collect_bls_keys(&commit_addresses_clone);
+        if commit_keys.is_empty() {
+            return Err(VerificationError::missing_signature());
+        }
+
+        let sig_bytes = commit_signature_clone.as_bytes();
+        let agg_sig = BlsSignature::from_bytes(sig_bytes).map_err(|_| {
+            VerificationError::invalid_signature(
+                sig_bytes.to_vec(),
+                Box::new(validator_set.validators()[0].clone()),
+                sign_bytes_clone.clone(),
+            )
+        })?;
+
+        let pk_refs: Vec<&BlsPublicKey> = commit_keys.iter().collect();
+        let result = agg_sig.fast_aggregate_verify(false, &sign_bytes_clone, dst, &pk_refs);
+
+        if result != blst::BLST_ERROR::BLST_SUCCESS {
+            return Err(VerificationError::invalid_signature(
+                sig_bytes.to_vec(),
+                Box::new(validator_set.validators()[0].clone()),
+                sign_bytes_clone.clone(),
+            ));
+        }
+
+        // Verify aggregated nil signature if present
+        if let Some(ref nil_sig) = nil_signature_clone {
+            let nil_keys = collect_bls_keys(&nil_addresses_clone);
+
+            if nil_keys.is_empty() {
+                return Err(VerificationError::missing_signature());
+            }
+
+            let sig_bytes = nil_sig.as_bytes();
+            let agg_sig = BlsSignature::from_bytes(sig_bytes).map_err(|_| {
+                VerificationError::invalid_signature(
+                    sig_bytes.to_vec(),
+                    Box::new(validator_set.validators()[0].clone()),
+                    sign_bytes_clone.clone(),
+                )
+            })?;
+
+            let pk_refs: Vec<&BlsPublicKey> = nil_keys.iter().collect();
+            let result = agg_sig.fast_aggregate_verify(false, &sign_bytes_clone, dst, &pk_refs);
+
+            if result != blst::BLST_ERROR::BLST_SUCCESS {
+                return Err(VerificationError::invalid_signature(
+                    sig_bytes.to_vec(),
+                    Box::new(validator_set.validators()[0].clone()),
+                    sign_bytes_clone.clone(),
+                ));
+            }
+        }
+
+        // Mark as verified - commit_signature was verified successfully,
+        // and nil_signature (if present) was also verified successfully
+        if let NonAbsentCommitVotes::BlsAggregated {
+            ref mut verified, ..
+        } = self
+        {
+            *verified = true;
+        }
+        Ok(())
     }
 }
 
@@ -463,6 +835,27 @@ fn voting_power_in_impl<V: signature::Verifier>(
     trust_threshold: TrustThreshold,
     total_voting_power: u64,
 ) -> Result<VotingPowerTally, VerificationError> {
+    // Check if we're dealing with beacon-kit (BLS aggregated signatures)
+    if votes.is_beacon_kit() {
+        return voting_power_in_beacon_kit(
+            votes,
+            validator_set,
+            trust_threshold,
+            total_voting_power,
+        );
+    }
+
+    // Standard CometBFT verification
+    voting_power_in_standard::<V>(votes, validator_set, trust_threshold, total_voting_power)
+}
+
+/// Standard CometBFT voting power verification with individual signatures.
+fn voting_power_in_standard<V: signature::Verifier>(
+    votes: &mut NonAbsentCommitVotes,
+    validator_set: &ValidatorSet,
+    trust_threshold: TrustThreshold,
+    total_voting_power: u64,
+) -> Result<VotingPowerTally, VerificationError> {
     let mut power = VotingPowerTally::new(total_voting_power, trust_threshold);
     let mut seen_vals = Vec::new();
 
@@ -484,6 +877,55 @@ fn voting_power_in_impl<V: signature::Verifier>(
             }
         }
     }
+    Ok(power)
+}
+
+/// Beacon-kit (Berachain) voting power verification with BLS aggregated signatures.
+fn voting_power_in_beacon_kit(
+    votes: &mut NonAbsentCommitVotes,
+    validator_set: &ValidatorSet,
+    trust_threshold: TrustThreshold,
+    total_voting_power: u64,
+) -> Result<VotingPowerTally, VerificationError> {
+    // First, verify the aggregated BLS signatures
+    votes.verify_aggregated_bls_if_present(validator_set)?;
+
+    let mut power = VotingPowerTally::new(total_voting_power, trust_threshold);
+
+    // Get commit addresses and optionally nil addresses from the BLS aggregated votes
+    let (commit_addresses, nil_signature, nil_addresses) = match votes {
+        NonAbsentCommitVotes::BlsAggregated {
+            commit_addresses,
+            nil_signature,
+            nil_addresses,
+            ..
+        } => (commit_addresses, nil_signature, nil_addresses),
+        _ => return Ok(power), // Should not happen since we checked is_beacon_kit
+    };
+
+    // Start with commit addresses (always included)
+    let mut all_addresses: Vec<&account::Id> = commit_addresses.iter().collect();
+
+    if nil_signature.is_some() {
+        all_addresses.extend(nil_addresses.iter());
+    }
+
+    // Tally voting power for all validators who participated
+    for addr in all_addresses.iter() {
+        if let Some(validator) = validator_set
+            .validators()
+            .iter()
+            .find(|v| &v.address == *addr)
+        {
+            power.tally(validator.power());
+
+            // Break early if sufficient voting power is reached.
+            if power.check().is_ok() {
+                break;
+            }
+        }
+    }
+
     Ok(power)
 }
 

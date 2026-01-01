@@ -7,6 +7,16 @@ pub enum BlockIdFlag {
     Commit,
     /// Voted for nil.
     Nil,
+
+    /// Aggregated commit
+    /// Voted for the block and contains aggregated signature.
+    AggCommit,
+    /// Voted for the block.
+    AggCommitAbsent,
+    /// Voted for nil and contains aggregated signature.
+    AggNil,
+    /// Voted for nil.
+    AggNilAbsent,
 }
 
 // =============================================================================
@@ -26,6 +36,10 @@ cometbft_old_pb_modules! {
                 RawBlockIdFlag::Absent => Ok(BlockIdFlag::Absent),
                 RawBlockIdFlag::Commit => Ok(BlockIdFlag::Commit),
                 RawBlockIdFlag::Nil => Ok(BlockIdFlag::Nil),
+                RawBlockIdFlag::AggCommit => Ok(BlockIdFlag::AggCommit),
+                RawBlockIdFlag::AggCommitAbsent => Ok(BlockIdFlag::AggCommitAbsent),
+                RawBlockIdFlag::AggNil => Ok(BlockIdFlag::AggNil),
+                RawBlockIdFlag::AggNilAbsent => Ok(BlockIdFlag::AggNilAbsent),
                 _ => Err(Error::block_id_flag()),            }
         }
     }
@@ -36,6 +50,10 @@ cometbft_old_pb_modules! {
                 BlockIdFlag::Absent => RawBlockIdFlag::Absent,
                 BlockIdFlag::Commit => RawBlockIdFlag::Commit,
                 BlockIdFlag::Nil => RawBlockIdFlag::Nil,
+                BlockIdFlag::AggCommit => RawBlockIdFlag::AggCommit,
+                BlockIdFlag::AggCommitAbsent => RawBlockIdFlag::AggCommitAbsent,
+                BlockIdFlag::AggNil => RawBlockIdFlag::AggNil,
+                BlockIdFlag::AggNilAbsent => RawBlockIdFlag::AggNilAbsent,
             }
         }
     }
@@ -54,6 +72,10 @@ mod v1 {
                 pb::BlockIdFlag::Absent => Ok(BlockIdFlag::Absent),
                 pb::BlockIdFlag::Commit => Ok(BlockIdFlag::Commit),
                 pb::BlockIdFlag::Nil => Ok(BlockIdFlag::Nil),
+                pb::BlockIdFlag::AggCommit => Ok(BlockIdFlag::AggCommit),
+                pb::BlockIdFlag::AggCommitAbsent => Ok(BlockIdFlag::AggCommitAbsent),
+                pb::BlockIdFlag::AggNil => Ok(BlockIdFlag::AggNil),
+                pb::BlockIdFlag::AggNilAbsent => Ok(BlockIdFlag::AggNilAbsent),
                 _ => Err(Error::block_id_flag()),
             }
         }
@@ -65,6 +87,10 @@ mod v1 {
                 BlockIdFlag::Absent => pb::BlockIdFlag::Absent,
                 BlockIdFlag::Commit => pb::BlockIdFlag::Commit,
                 BlockIdFlag::Nil => pb::BlockIdFlag::Nil,
+                BlockIdFlag::AggCommit => pb::BlockIdFlag::AggCommit,
+                BlockIdFlag::AggCommitAbsent => pb::BlockIdFlag::AggCommitAbsent,
+                BlockIdFlag::AggNil => pb::BlockIdFlag::AggNil,
+                BlockIdFlag::AggNilAbsent => pb::BlockIdFlag::AggNilAbsent,
             }
         }
     }
@@ -83,6 +109,10 @@ mod v1beta1 {
                 pb::BlockIdFlag::Absent => Ok(BlockIdFlag::Absent),
                 pb::BlockIdFlag::Commit => Ok(BlockIdFlag::Commit),
                 pb::BlockIdFlag::Nil => Ok(BlockIdFlag::Nil),
+                pb::BlockIdFlag::AggCommit => Ok(BlockIdFlag::AggCommit),
+                pb::BlockIdFlag::AggCommitAbsent => Ok(BlockIdFlag::AggCommitAbsent),
+                pb::BlockIdFlag::AggNil => Ok(BlockIdFlag::AggNil),
+                pb::BlockIdFlag::AggNilAbsent => Ok(BlockIdFlag::AggNilAbsent),
                 _ => Err(Error::block_id_flag()),
             }
         }
@@ -94,6 +124,10 @@ mod v1beta1 {
                 BlockIdFlag::Absent => pb::BlockIdFlag::Absent,
                 BlockIdFlag::Commit => pb::BlockIdFlag::Commit,
                 BlockIdFlag::Nil => pb::BlockIdFlag::Nil,
+                BlockIdFlag::AggCommit => pb::BlockIdFlag::AggCommit,
+                BlockIdFlag::AggCommitAbsent => pb::BlockIdFlag::AggCommitAbsent,
+                BlockIdFlag::AggNil => pb::BlockIdFlag::AggNil,
+                BlockIdFlag::AggNilAbsent => pb::BlockIdFlag::AggNilAbsent,
             }
         }
     }

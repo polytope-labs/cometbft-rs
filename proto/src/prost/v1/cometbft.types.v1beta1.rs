@@ -51,6 +51,10 @@ pub enum BlockIdFlag {
     Commit = 2,
     /// Voted for nil
     Nil = 3,
+    AggCommit = 4,
+    AggCommitAbsent = 5,
+    AggNil = 6,
+    AggNilAbsent = 7
 }
 impl BlockIdFlag {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -63,6 +67,10 @@ impl BlockIdFlag {
             Self::Absent => "BLOCK_ID_FLAG_ABSENT",
             Self::Commit => "BLOCK_ID_FLAG_COMMIT",
             Self::Nil => "BLOCK_ID_FLAG_NIL",
+            Self::AggCommit => "BLOCK_ID_FLAG_AGG_COMMIT",
+            Self::AggCommitAbsent => "BLOCK_ID_FLAG_AGG_COMMIT_ABSENT",
+            Self::AggNil => "BLOCK_ID_FLAG_AGG_NIL",
+            Self::AggNilAbsent => "BLOCK_ID_FLAG_AGG_NIL_ABSENT"
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -72,6 +80,10 @@ impl BlockIdFlag {
             "BLOCK_ID_FLAG_ABSENT" => Some(Self::Absent),
             "BLOCK_ID_FLAG_COMMIT" => Some(Self::Commit),
             "BLOCK_ID_FLAG_NIL" => Some(Self::Nil),
+            "BLOCK_ID_FLAG_AGG_COMMIT" => Some(Self::AggCommit),
+            "BLOCK_ID_FLAG_AGG_COMMIT_ABSENT" => Some(Self::AggCommitAbsent),
+            "BLOCK_ID_FLAG_AGG_NIL" => Some(Self::AggNil),
+            "BLOCK_ID_FLAG_AGG_NIL_ABSENT" => Some(Self::AggNilAbsent),
             _ => None,
         }
     }
@@ -380,9 +392,9 @@ pub struct DuplicateVoteEvidence {
     pub timestamp: ::core::option::Option<crate::google::protobuf::Timestamp>,
 }
 /// LightClientAttackEvidence contains evidence of a set of validators attempting to mislead a light client.
-#[serde(rename_all = "PascalCase")]
 #[derive(::serde::Deserialize, ::serde::Serialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[serde(rename_all = "PascalCase")]
 pub struct LightClientAttackEvidence {
     #[prost(message, optional, tag = "1")]
     pub conflicting_block: ::core::option::Option<LightBlock>,
