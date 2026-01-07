@@ -172,6 +172,60 @@ pub fn compute_hash_from_aunts<H: MerkleHash + Default>(
     }
 }
 
+/// Compute the merkle root from a slice of leaf hashes.
+pub fn compute_root_from_leaf_hashes<H: MerkleHash + Default>(leaf_hashes: &[Hash]) -> Hash {
+    let mut hasher = H::default();
+    compute_root_recursive(&mut hasher, leaf_hashes)
+}
+
+fn compute_root_recursive<H: MerkleHash>(hasher: &mut H, hashes: &[Hash]) -> Hash {
+    match hashes.len() {
+        0 => hasher.empty_hash(),
+        1 => hashes[0],
+        n => {
+            let split = get_split_point(n as u64) as usize;
+            let left = compute_root_recursive(hasher, &hashes[..split]);
+            let right = compute_root_recursive(hasher, &hashes[split..]);
+            hasher.inner_hash(left, right)
+        },
+    }
+}
+
+/// Generate a merkle proof (aunt hashes) for a leaf at the given index.
+/// Returns the sibling hashes from leaf to root (bottom to top).
+pub fn generate_proof<H: MerkleHash + Default>(leaf_hashes: &[Hash], index: usize) -> Vec<Hash> {
+    let mut hasher = H::default();
+    generate_proof_recursive(&mut hasher, leaf_hashes, index)
+}
+
+fn generate_proof_recursive<H: MerkleHash>(
+    hasher: &mut H,
+    hashes: &[Hash],
+    index: usize,
+) -> Vec<Hash> {
+    if hashes.len() <= 1 {
+        return Vec::new();
+    }
+
+    let split = get_split_point(hashes.len() as u64) as usize;
+
+    if index < split {
+        // Leaf is in left subtree/branch
+        let mut proof = generate_proof_recursive(hasher, &hashes[..split], index);
+        // Add right subtree root as aunt/sibling
+        let right_root = compute_root_recursive(hasher, &hashes[split..]);
+        proof.push(right_root);
+        proof
+    } else {
+        // Leaf is in right subtree/branch
+        let mut proof = generate_proof_recursive(hasher, &hashes[split..], index - split);
+        // Add left subtree root as aunt/sibling
+        let left_root = compute_root_recursive(hasher, &hashes[..split]);
+        proof.push(left_root);
+        proof
+    }
+}
+
 /// A wrapper for platform-provided host functions which can't do incremental
 /// hashing. One unfortunate example of such platform is Polkadot.
 pub struct NonIncremental<H>(PhantomData<H>);
