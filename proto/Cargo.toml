@@ -15,7 +15,12 @@ description = """
 
 [features]
 default = []
-std = []
+std = [
+    "prost/std",
+    "bytes/std",
+    "serde/std",
+    "flex-error/std",
+]
 grpc = ["grpc-server"]
 grpc-server = ["dep:tonic", "std"]
 json-schema = ["dep:schemars", "std"]

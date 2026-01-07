@@ -55,7 +55,16 @@ blst = { version = "0.3.11", default-features = false }
 
 [features]
 default = ["std", "rust-crypto"]
-std = ["flex-error/std", "clock"]
+std = [
+    "flex-error/std",
+    "clock",
+    "bytes/std",
+    "prost/std",
+    "serde/std",
+    "serde_json/std",
+    "sha2/std",
+    "cometbft-proto/std",
+]
 clock = ["time/std"]
 secp256k1 = ["rust-crypto", "dep:k256", "dep:ripemd"]
 rust-crypto = ["dep:ed25519-consensus"]
