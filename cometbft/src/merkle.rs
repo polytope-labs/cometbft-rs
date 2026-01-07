@@ -104,6 +104,74 @@ where
     }
 }
 
+/// Get the split point for merkle tree construction.
+/// Returns the largest power of 2 less than n, matching CometBFT's getSplitPoint.
+pub fn get_split_point(n: u64) -> u64 {
+    if n < 1 {
+        panic!("n must be >= 1");
+    }
+    let bit_len = 64 - n.leading_zeros();
+    let k = 1u64 << (bit_len - 1);
+
+    // If k equals n, then n is a power of 2, and we need k/2 to get a value LESS than n
+    if k == n {
+        k >> 1
+    } else {
+        k
+    }
+}
+
+/// Compute the merkle root hash from a leaf hash and its aunt hashes.
+/// This implements CometBFT's computeHashFromAunts algorithm.
+///
+/// * `aunts` - The sibling hashes from leaf to root (bottom to top)
+pub fn compute_hash_from_aunts<H: MerkleHash + Default>(
+    index: u64,
+    total: u64,
+    leaf_hash: Hash,
+    aunts: &[Hash],
+) -> Option<Hash> {
+    if total == 0 {
+        return None;
+    }
+
+    if total == 1 {
+        if aunts.is_empty() {
+            return Some(leaf_hash);
+        }
+        return None;
+    }
+
+    if aunts.is_empty() {
+        return None;
+    }
+
+    let split = get_split_point(total);
+    let mut hasher = H::default();
+
+    if index < split {
+        // Leaf is in left subtree
+        let left_hash = compute_hash_from_aunts::<H>(
+            index,
+            split,
+            leaf_hash,
+            &aunts[..aunts.len() - 1],
+        )?;
+        let right_hash = aunts.last()?;
+        Some(hasher.inner_hash(left_hash, *right_hash))
+    } else {
+        // Leaf is in right subtree
+        let left_hash = aunts.last()?;
+        let right_hash = compute_hash_from_aunts::<H>(
+            index - split,
+            total - split,
+            leaf_hash,
+            &aunts[..aunts.len() - 1],
+        )?;
+        Some(hasher.inner_hash(*left_hash, right_hash))
+    }
+}
+
 /// A wrapper for platform-provided host functions which can't do incremental
 /// hashing. One unfortunate example of such platform is Polkadot.
 pub struct NonIncremental<H>(PhantomData<H>);

@@ -1,5 +1,7 @@
 //! Merkle proofs
 
+use core::convert::TryInto;
+
 use cometbft_proto::crypto::v1::Proof as RawProof;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +18,43 @@ pub struct Proof {
     pub leaf_hash: Hash,
     // Hashes from leaf's sibling to a root's child.
     pub aunts: Vec<Hash>,
+}
+
+impl Proof {
+    /// Create a new Proof
+    pub fn new(total: u64, index: u64, leaf_hash: Hash, aunts: Vec<Hash>) -> Self {
+        Self { total, index, leaf_hash, aunts }
+    }
+
+    /// Verify that this proof correctly proves inclusion in a merkle tree with the given root.
+    /// Uses the MerkleHash implementation for hashing.
+    pub fn verify<H: super::MerkleHash + Default>(&self, root_hash: Hash) -> bool {
+        match self.compute_root_hash::<H>() {
+            Some(computed) => computed == root_hash,
+            None => false,
+        }
+    }
+
+    /// Compute the root hash from this proof.
+    pub fn compute_root_hash<H: super::MerkleHash + Default>(&self) -> Option<Hash> {
+        let leaf_hash_bytes: [u8; 32] = self.leaf_hash.as_bytes().try_into().ok()?;
+        let aunts_bytes: Vec<[u8; 32]> = self.aunts.iter()
+            .filter_map(|h| h.as_bytes().try_into().ok())
+            .collect();
+
+        if aunts_bytes.len() != self.aunts.len() {
+            return None;
+        }
+
+        let computed = super::compute_hash_from_aunts::<H>(
+            self.index,
+            self.total,
+            leaf_hash_bytes,
+            &aunts_bytes,
+        )?;
+
+        Some(Hash::Sha256(computed))
+    }
 }
 
 /// Merkle proof defined by the list of ProofOps
