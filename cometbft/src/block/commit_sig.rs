@@ -101,6 +101,18 @@ impl CommitSig {
         self == &Self::BlockIdFlagAbsent
     }
 
+    /// Whether this slot belongs to an aggregated commit, where the signatures of all
+    /// participating validators are carried as a single BLS aggregate.
+    pub fn is_aggregated(&self) -> bool {
+        matches!(
+            self,
+            Self::BlockIdFlagAggCommit { .. }
+                | Self::BlockIdFlagAggCommitAbsent { .. }
+                | Self::BlockIdFlagAggNil { .. }
+                | Self::BlockIdFlagAggNilAbsent { .. }
+        )
+    }
+
     /// Whether this signature is a commit  (validator voted for the Commit.BlockId)
     pub fn is_commit(&self) -> bool {
         matches!(
